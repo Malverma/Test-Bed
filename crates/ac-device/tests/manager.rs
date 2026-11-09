@@ -36,8 +36,23 @@ fn start_with(mock: &MockAdbHandle, tweak: impl FnOnce(&mut Config)) -> ManagerH
     let mut opts = ManagerOptions::new(cfg, None);
     opts.discovery = false;
     opts.streaming = false; // the mock cannot run scrcpy-server
+    // Reconnect only retries saved addresses on a local network: give it the
+    // fake phones' networks instead of this PC's, and nothing to search.
+    static ROUTES: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    let routes = ROUTES.get_or_init(|| {
+        let path = temp_dir("routes").join("route");
+        std::fs::write(&path, LAN_ROUTES).unwrap();
+        path
+    });
+    opts.reconnect = ReconnectOptions { route_table: routes.clone(), hosts: Some(Vec::new()), ..ReconnectOptions::default() };
     ac_device::spawn(opts)
 }
+
+/// `/proc/net/route` with 192.168.0.0/24 and 192.168.1.0/24 on wlan0.
+const LAN_ROUTES: &str = "Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\tMTU\tWindow\tIRTT
+wlan0\t0000A8C0\t00000000\t0001\t0\t0\t600\t00FFFFFF\t0\t0\t0
+wlan0\t0001A8C0\t00000000\t0001\t0\t0\t600\t00FFFFFF\t0\t0\t0
+";
 
 /// Waits for the first event satisfying `pred`, failing after 5 s.
 async fn wait_for<T>(h: &ManagerHandle, what: &str, mut pred: impl FnMut(&UiEvent) -> Option<T>) -> T {
