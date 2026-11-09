@@ -45,7 +45,8 @@ const STAY_AWAKE_TIMEOUT: u32 = i32::MAX as u32;
 const HELPER_PACKAGE: &str = "org.androidcontroller.keeper";
 /// How long an update of the helper is watched for a signature failure.
 const HELPER_INSTALL_WAIT: Duration = Duration::from_secs(180);
-pub const HELPER_SETUP_CMD: &str = "rm -f /data/local/tmp/android-controller-server.jar /data/local/tmp/android-controller-probe.jar /data/local/tmp/android-controller-ui.xml; \
+pub const HELPER_SETUP_CMD: &str = "rm -f /data/local/tmp/android-controller-server.jar /data/local/tmp/android-controller-probe.jar /data/local/tmp/android-controller-ui.xml \
+/data/local/tmp/test-bed-multi-server.jar /data/local/tmp/test-bed-multi-probe.jar /data/local/tmp/test-bed-multi-ui.xml; \
 p=org.androidcontroller.keeper; \
 pm path $p >/dev/null 2>&1 || { echo @none; exit 0; }; \
 echo @$(dumpsys package $p | grep -m 1 -o 'versionCode=[0-9]*'); \
@@ -563,7 +564,7 @@ impl Manager {
             warning: match (&self.direct[i], &s.phase) {
                 (Some(l), Phase::Online { .. }) if !l.hello.input => Some(
                     "Touch control is off on the phone, so it only shows the screen. On the phone open Wireless Debugging Keeper, \
-tap “Turn on touch control” and switch on “Test Bed Multi touch control”."
+tap “Turn on touch control” and switch on “Test Bed touch control”."
                         .into(),
                 ),
                 (_, Phase::Online { .. }) if s.display_desired && s.transport == TransportKind::Legacy => Some(
@@ -803,7 +804,7 @@ so touch control of the PC is off unless you turn it on. Wireless debugging is e
                         // are not asked, so they don't report a failure each time.
                         params.audio &= self.slots[i].device.as_ref().is_some_and(|d| d.sdk >= 30);
                         let audio = ac_audio::Options {
-                            node_name: format!("test-bed-multi.slot{slot}"),
+                            node_name: format!("test-bed.slot{slot}"),
                             description: self.views[i].as_ref().map_or_else(|| self.slots[i].display_name(), |v| v.title.clone()),
                             volume: self.cfg.audio.volume,
                             latency_frames: self.cfg.audio.pipewire_latency_frames,

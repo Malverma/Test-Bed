@@ -1,10 +1,10 @@
 # Local build from this repository: cd packaging/arch && makepkg -si
 # Builds the last *committed* state (git+file:// source).
-pkgname=test-bed-multi
+pkgname=test-bed
 pkgver=2.0.0
 pkgrel=1
 pkgdesc="Mirror, control and test apps on up to five Android phones over Wi-Fi (GTK4)"
-url='https://github.com/Malverma/Android-Controller'
+url='https://github.com/Malverma/Test-Bed'
 arch=('x86_64' 'aarch64')
 license=('Apache-2.0')
 depends=('gtk4' 'libadwaita' 'glib2' 'android-tools' 'scrcpy' 'avahi' 'dbus' 'ffmpeg' 'gcc-libs' 'glibc')
@@ -13,9 +13,9 @@ optdepends=('nss-mdns: resolve .local hostnames'
             'pipewire-audio: play the focused phone'\''s audio (pw-cat)'
             'intel-media-driver: hardware video and monitor mode encoding on Intel GPUs (Broadwell and newer)'
             'hyprland: use a phone as a monitor for this PC')
-replaces=('android-controller')
-conflicts=('android-controller')
-install=test-bed-multi.install
+replaces=('test-bed-multi' 'android-controller')
+conflicts=('test-bed-multi' 'android-controller')
+install=test-bed.install
 options=('!lto' '!debug')  # debug remap flags break on paths with spaces
 source=("$pkgname::git+file://$(realpath "$startdir/../..")")
 sha256sums=('SKIP')
@@ -37,19 +37,19 @@ prepare() {
 
 build() {
   cd "$pkgname"
-  CARGO_TARGET_DIR=target cargo build --frozen --release --package test-bed-multi --package ac-mcp
+  CARGO_TARGET_DIR=target cargo build --frozen --release --package test-bed --package ac-mcp
 }
 
 check() {
   cd "$pkgname"
-  CARGO_TARGET_DIR=target cargo test --frozen --release --workspace --exclude test-bed-multi
+  CARGO_TARGET_DIR=target cargo test --frozen --release --workspace --exclude test-bed
 }
 
 package() {
   cd "$pkgname"
-  local appid=org.testbedmulti.TestBedMulti
-  install -Dm755 target/release/test-bed-multi "$pkgdir/usr/bin/test-bed-multi"
-  install -Dm755 target/release/test-bed-multi-mcp "$pkgdir/usr/bin/test-bed-multi-mcp"
+  local appid=org.testbed.TestBed
+  install -Dm755 target/release/test-bed "$pkgdir/usr/bin/test-bed"
+  install -Dm755 target/release/test-bed-mcp "$pkgdir/usr/bin/test-bed-mcp"
   install -Dm644 "data/$appid.desktop" "$pkgdir/usr/share/applications/$appid.desktop"
   install -Dm644 android-helper/dist/wireless-debugging-keeper.apk \
     "$pkgdir/usr/share/$pkgname/wireless-debugging-keeper.apk"

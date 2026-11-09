@@ -40,6 +40,7 @@ import java.util.concurrent.Executors;
  * (bit 62 = keyframe, low bits = pts) and u32 size, then the Annex-B bytes.
  */
 final class Monitor {
+    // Keeps the pre-rename name: the PC app connects to it.
     static final String SOCKET = "test-bed-multi-monitor";
     /** A press of the phone's button waits this long for the PC to answer. */
     private static final long REQUEST_VALID_MS = 60_000;
@@ -93,8 +94,8 @@ final class Monitor {
     /** One line for the app's screen. */
     static String statusLine() {
         if (active) return "Showing the PC";
-        if (requestPending()) return "Waiting for the PC… open Test Bed Multi and press Reconnect";
-        return pcConnected() ? "Ready" : "Test Bed Multi is not connected";
+        if (requestPending()) return "Waiting for the PC… open Test Bed and press Reconnect";
+        return pcConnected() ? "Ready" : "Test Bed is not connected";
     }
 
     private static boolean requestPending() {

@@ -1,5 +1,5 @@
 [package]
-name = "test-bed-multi"
+name = "test-bed"
 description = "Mirror and control up to four Android phones over Wi-Fi"
 version.workspace = true
 edition.workspace = true

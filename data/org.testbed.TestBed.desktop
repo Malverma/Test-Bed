@@ -1,8 +1,8 @@
 [Desktop Entry]
 Type=Application
-Name=Test Bed Multi
+Name=Test Bed
 Comment=Mirror and control Android phones over Wi-Fi
-Exec=test-bed-multi
+Exec=test-bed
 Icon=phone
 Terminal=false
 Categories=Utility;GTK;

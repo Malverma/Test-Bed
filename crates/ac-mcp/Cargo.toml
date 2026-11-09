@@ -1,6 +1,6 @@
 [package]
 name = "ac-mcp"
-description = "MCP server: lets Claude (Cursor, Claude Code) drive the phones in a running Test Bed Multi"
+description = "MCP server: lets Claude (Cursor, Claude Code) drive the phones in a running Test Bed"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,7 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [[bin]]
-name = "test-bed-multi-mcp"
+name = "test-bed-mcp"
 path = "src/main.rs"
 
 [dependencies]

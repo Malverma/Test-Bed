@@ -239,7 +239,7 @@ impl Capturer {
 
 fn alloc(shm: &wl_shm::WlShm, qh: &QueueHandle<State>, info: BufferInfo) -> Result<ShmBuffer> {
     let size = (info.stride * info.height) as usize;
-    let fd = rustix::fs::memfd_create("test-bed-multi-capture", rustix::fs::MemfdFlags::CLOEXEC)?;
+    let fd = rustix::fs::memfd_create("test-bed-capture", rustix::fs::MemfdFlags::CLOEXEC)?;
     let file = File::from(fd);
     file.set_len(size as u64)?;
     let map = unsafe { MmapMut::map_mut(&file)? };

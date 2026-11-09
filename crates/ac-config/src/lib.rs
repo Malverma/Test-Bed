@@ -15,9 +15,9 @@ pub use devices::{DeviceRecord, Devices};
 pub use state::{AppState, BroadcastState, WindowState};
 pub use validate::{ValidationError, check_target_dir, validate};
 
-const APP_DIR: &str = "test-bed-multi";
-/// The folder name before the app was renamed.
-const OLD_APP_DIR: &str = "android-controller";
+const APP_DIR: &str = "test-bed";
+/// Folder names from before the app was renamed, newest first.
+const OLD_APP_DIRS: [&str; 2] = ["test-bed-multi", "android-controller"];
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -40,21 +40,28 @@ pub struct Paths {
 }
 
 impl Paths {
-    /// `$XDG_CONFIG_HOME/test-bed-multi/*` and `$XDG_STATE_HOME/test-bed-multi`.
+    /// `$XDG_CONFIG_HOME/test-bed/*` and `$XDG_STATE_HOME/test-bed`.
     pub fn xdg() -> Option<Self> {
         let base = directories::BaseDirs::new()?;
-        let config_dir = base.config_dir().join(APP_DIR);
-        let state_dir = base
+        let state_base = base
             .state_dir()
             .map(Path::to_path_buf)
             .unwrap_or_else(|| base.home_dir().join(".local/state"));
-        let state_dir = state_dir.join(APP_DIR);
-        for dir in [&config_dir, &state_dir] {
-            if let Some(old) = dir.parent().map(|p| p.join(OLD_APP_DIR)) {
-                migrate_dir(&old, dir);
+        Some(Self::xdg_in(base.config_dir(), &state_base))
+    }
+
+    /// The app's folders under the given XDG bases, after moving over a
+    /// folder left by an older app name.
+    pub fn xdg_in(config_base: &Path, state_base: &Path) -> Self {
+        let (config_dir, state_dir) = (config_base.join(APP_DIR), state_base.join(APP_DIR));
+        for (base, dir) in [(config_base, &config_dir), (state_base, &state_dir)] {
+            for old in OLD_APP_DIRS {
+                if migrate_dir(&base.join(old), dir) {
+                    break;
+                }
             }
         }
-        Some(Self::in_dirs(&config_dir, &state_dir))
+        Self::in_dirs(&config_dir, &state_dir)
     }
 
     pub fn in_dirs(config_dir: &Path, state_dir: &Path) -> Self {

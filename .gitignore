@@ -2,7 +2,9 @@
 *.tmp
 /packaging/arch/src/
 /packaging/arch/pkg/
+/packaging/arch/test-bed/
 /packaging/arch/test-bed-multi/
+/packaging/arch/android-controller/
 /packaging/arch/*.pkg.tar.*
 
 # Android helper build output

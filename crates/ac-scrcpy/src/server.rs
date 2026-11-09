@@ -4,7 +4,7 @@ use crate::demux::VideoCodec;
 
 /// Where the server jar is pushed. The server unlinks itself as soon as it
 /// starts (`CleanUp.unlinkSelf`), so it is pushed before every launch.
-pub const DEVICE_JAR: &str = "/data/local/tmp/test-bed-multi-server.jar";
+pub const DEVICE_JAR: &str = "/data/local/tmp/test-bed-server.jar";
 
 /// Parses the first line of `scrcpy --version`: `scrcpy 4.1 <https://…>`.
 pub fn parse_version(output: &str) -> Option<String> {
@@ -149,7 +149,7 @@ mod tests {
         let p = ServerParams { scid: 0xabcd, codec_options: "a:int=1'b".into(), ..Default::default() };
         let cmd = p.command("4.1");
         assert!(cmd.starts_with(
-            "CLASSPATH=/data/local/tmp/test-bed-multi-server.jar app_process / com.genymobile.scrcpy.Server '4.1' 'scid=0000abcd' 'log_level=info' 'tunnel_forward=true'"
+            "CLASSPATH=/data/local/tmp/test-bed-server.jar app_process / com.genymobile.scrcpy.Server '4.1' 'scid=0000abcd' 'log_level=info' 'tunnel_forward=true'"
         ));
         assert!(cmd.contains(" 'video_codec_options=a:int=1'\\''b' "), "{cmd}");
         assert!(cmd.contains(" 'send_stream_meta=true' "));

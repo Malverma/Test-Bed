@@ -1891,7 +1891,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "test-bed-multi"
+name = "test-bed"
 version = "2.0.0"
 dependencies = [
  "ac-config",

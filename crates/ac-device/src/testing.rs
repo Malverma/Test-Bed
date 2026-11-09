@@ -9,7 +9,7 @@ use chrono::{DateTime, Local};
 use crate::api::{AppAction, CrashView};
 
 /// Where test runs, screenshots and recordings go: `testing.output_dir`,
-/// or `~/Documents/Test Bed Multi` (`~/Test Bed Multi` without a
+/// or `~/Documents/Test Bed` (`~/Test Bed` without a
 /// Documents folder).
 pub fn output_root(configured: &str) -> PathBuf {
     let configured = configured.trim();
@@ -23,8 +23,8 @@ pub fn output_root(configured: &str) -> PathBuf {
     }
     let dirs = directories::UserDirs::new();
     match dirs.as_ref().and_then(|d| d.document_dir()) {
-        Some(docs) => docs.join("Test Bed Multi"),
-        None => dirs.map_or_else(|| PathBuf::from("Test Bed Multi"), |d| d.home_dir().join("Test Bed Multi")),
+        Some(docs) => docs.join("Test Bed"),
+        None => dirs.map_or_else(|| PathBuf::from("Test Bed"), |d| d.home_dir().join("Test Bed")),
     }
 }
 
@@ -171,7 +171,7 @@ mod tests {
         assert_eq!(safe_name("///"), "___");
         assert_eq!(safe_name(""), "phone");
         assert_eq!(output_root("/tmp/x"), PathBuf::from("/tmp/x"));
-        assert!(output_root("").ends_with("Test Bed Multi"));
+        assert!(output_root("").ends_with("Test Bed"));
     }
 
     #[test]

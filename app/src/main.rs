@@ -18,7 +18,7 @@ use adw::prelude::*;
 use gtk::glib;
 use tracing_subscriber::EnvFilter;
 
-const APP_ID: &str = "org.testbedmulti.TestBedMulti";
+const APP_ID: &str = "org.testbed.TestBed";
 
 fn main() -> glib::ExitCode {
     tracing_subscriber::fmt()

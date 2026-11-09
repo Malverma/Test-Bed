@@ -5,6 +5,7 @@ use std::io::{self, Read, Write};
 
 use serde_json::Value;
 
+/// Keeps the pre-rename name: helpers 0.8 listen on it.
 pub const SOCKET: &str = "localabstract:test-bed-multi-monitor";
 /// The first helper with monitor mode and the locator.
 pub const MIN_HELPER_VERSION: u32 = 8;

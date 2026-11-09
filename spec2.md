@@ -77,6 +77,14 @@ it is `Reconnecting`. These gaps are what break it:
 
 ## 3. Rename to Test Bed Multi
 
+> **Update, 2026-11-09:** renamed again, to **Test Bed**. Same rules as below,
+> with `test-bed-multi` → `test-bed`, `org.testbedmulti.TestBedMulti` →
+> `org.testbed.TestBed`, `TEST_BED_MULTI_SOCKET` → `TEST_BED_SOCKET` (both old
+> variables still read) and the repo → `Malverma/Test-Bed`. Folders named
+> `test-bed-multi` or `android-controller` move to `test-bed` on first launch,
+> and both old package names are replaced. `localabstract:test-bed-multi-monitor`
+> keeps its name because helper 0.8 listens on it.
+
 Rule: **rename what people see or type. Keep identifiers that live on phones or
 in other people's game builds**, because changing them would break upgrades
 without giving users anything.

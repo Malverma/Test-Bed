@@ -102,7 +102,7 @@ public final class MonitorService extends Service {
         return b
                 .setSmallIcon(android.R.drawable.stat_notify_sync_noanim)
                 .setContentTitle("Showing your PC")
-                .setContentText("This phone is a monitor for Test Bed Multi")
+                .setContentText("This phone is a monitor for Test Bed")
                 .setContentIntent(open)
                 .addAction(new Notification.Action.Builder(null, "Exit Monitor", exit).build())
                 .setOngoing(true)
