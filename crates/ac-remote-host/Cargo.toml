@@ -1,0 +1,33 @@
+[package]
+name = "ac-remote-host"
+description = "Shares this PC with paired computers: capture, encode, stream, input (from RemoteLinux)"
+version.workspace = true
+# Ported from RemoteLinux as is; kept on its edition.
+edition = "2021"
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "test-bed-share"
+path = "src/main.rs"
+
+[dependencies]
+ac-remote = { path = "../ac-remote" }
+anyhow.workspace = true
+tokio = { workspace = true, features = ["signal"] }
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring", "log"] }
+serde.workspace = true
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+bytes = "1"
+ffmpeg-next = { version = "9", default-features = false, features = ["codec", "format", "software-scaling"] }
+evdev = "0.13"
+wayland-client = "0.31"
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+wayland-protocols = { version = "0.32", features = ["client"] }
+memmap2 = "0.9"
+rustix = { version = "1", features = ["fs", "event"] }
+opus = "0.3"

@@ -249,6 +249,9 @@ struct SlotShared {
     link: watch::Receiver<Option<Link>>,
     /// One job per device at a time beyond this (spec §5.3).
     sem: Semaphore,
+    /// One install at a time: Android confirms one install at a time, and a
+    /// second one hides the first's confirmation on phones without ADB.
+    installs: Semaphore,
 }
 
 struct Ctx {
@@ -291,6 +294,7 @@ impl Transfers {
                 batch: Mutex::default(),
                 link,
                 sem: Semaphore::new(per_device),
+                installs: Semaphore::new(1),
             })
             .collect();
         let ctx = Arc::new(Ctx {
@@ -651,6 +655,13 @@ impl Ctx {
 
     async fn run(&self, slot: SlotId, mut job: Job, id: u64) -> Outcome {
         let s = self.slot(slot).expect("valid slot");
+        let _install = match job.kind {
+            Kind::Install => match s.installs.acquire().await {
+                Ok(p) => Some(p),
+                Err(_) => return Outcome::Failed("shut down".into()),
+            },
+            Kind::Push => None,
+        };
         let Ok(_dev) = s.sem.acquire().await else { return Outcome::Failed("shut down".into()) };
         let Ok(_all) = self.global.acquire().await else { return Outcome::Failed("shut down".into()) };
         s.batch.lock().unwrap().current = Some((id, job.name.clone(), job.kind));
@@ -916,6 +927,11 @@ impl Ctx {
             return Err(JobError::Fatal("Installing needs Android 7 or newer; drop with Shift to copy the APK instead".into()));
         }
         self.check_local(job).await?;
+        if self.cfg().skip_install_verification {
+            // Play Protect's "verify apps over ADB" scan: slow, and it can stop
+            // to ask on the phone. Turned off once; later installs skip it.
+            let _ = self.sh(link, "settings put global verifier_verify_adb_installs 0").await;
+        }
         self.set_progress(slot, job.id, 0);
         let mut file = tokio::fs::File::open(&job.local).await.map_err(|e| JobError::Fatal(format!("Can't read {}: {e}", job.local.display())))?;
         let mut s = self.adb.open_service(&link.serial, &format!("exec:cmd package install -r -S {}", job.size)).await?;
@@ -959,6 +975,7 @@ impl Ctx {
             size: job.size,
             job: job.id,
             install,
+            auto_confirm: install && cfg.skip_install_verification,
             conflict: cfg.on_conflict.clone(),
         };
         let (mut s, start) = ac_direct::open_push(d.addr, &d.creds, &link.device_id, &req).await.map_err(direct_err)?;

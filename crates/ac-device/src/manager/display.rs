@@ -10,8 +10,9 @@ use std::sync::mpsc as std_mpsc;
 
 use ac_monitor::protocol::{self, FromPhone, Hello};
 use ac_monitor::session::{self, SessionEvent, SessionParams};
+use ac_monitor::keyboard::{self, KeyInput};
 use ac_monitor::touch::TouchEvent;
-use ac_monitor::{hypr, output_name, pointer};
+use ac_monitor::{OUTPUT_PREFIX, hypr, output_name, pointer};
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -42,6 +43,14 @@ pub trait DisplayHost: fmt::Debug + Send + Sync + 'static {
     fn remove(&self, output: &str) -> Result<(), String>;
     fn remove_leftovers(&self);
     fn pointer(&self, output: &str) -> Result<std_mpsc::Sender<TouchEvent>, String>;
+    /// The PC's own screens, which a phone may mirror.
+    fn outputs(&self) -> Vec<hypr::MonitorInfo> {
+        Vec::new()
+    }
+    /// Typing from the phone's keyboard.
+    fn keyboard(&self) -> Result<std_mpsc::Sender<KeyInput>, String> {
+        Err("no keyboard on this PC".into())
+    }
     /// Starts sending `output` over `video`. The flag asks for a keyframe.
     fn session(&self, params: SessionParams, video: std::net::TcpStream, on_event: EventSink) -> (SessionGuard, Arc<AtomicBool>);
 }
@@ -77,6 +86,17 @@ impl DisplayHost for RealHost {
         pointer::spawn(output).map_err(|e| format!("{e:#}"))
     }
 
+    fn outputs(&self) -> Vec<hypr::MonitorInfo> {
+        let mut list: Vec<_> = hypr::monitors().unwrap_or_default().into_iter().filter(|m| !m.name.starts_with(OUTPUT_PREFIX)).collect();
+        // Numbered left to right on the phone.
+        list.sort_by_key(|m| (m.x, m.y));
+        list
+    }
+
+    fn keyboard(&self) -> Result<std_mpsc::Sender<KeyInput>, String> {
+        keyboard::spawn().map_err(|e| format!("{e:#}"))
+    }
+
     fn session(&self, params: SessionParams, video: std::net::TcpStream, on_event: EventSink) -> (SessionGuard, Arc<AtomicBool>) {
         let handle = session::spawn(params, video, on_event);
         let flag = handle.keyframe_flag();
@@ -86,10 +106,12 @@ impl DisplayHost for RealHost {
 
 pub(super) enum DisplayMsg {
     Hello { slot: SlotId, conn: u64, hello: Hello, port: u16 },
-    Request { slot: SlotId, conn: u64, on: bool },
+    Request { slot: SlotId, conn: u64, on: bool, mirror: Option<String> },
+    ListOutputs { slot: SlotId, conn: u64 },
     LinkClosed { slot: SlotId, conn: u64 },
     /// Sent before the picture starts, so no touch after it is lost.
     PointerReady { slot: SlotId, id: u64, pointer: std_mpsc::Sender<TouchEvent> },
+    KeyboardReady { slot: SlotId, id: u64, keyboard: std_mpsc::Sender<KeyInput> },
     Started { slot: SlotId, id: u64, guard: SessionGuard, encoder_flag: Arc<AtomicBool> },
     StartFailed { slot: SlotId, id: u64, error: String, retry: bool },
     Session { slot: SlotId, id: u64, event: SessionEvent },
@@ -103,12 +125,14 @@ pub(super) enum DisplayMsg {
 #[derive(Default)]
 struct Direct {
     touch: StdMutex<Option<std_mpsc::Sender<TouchEvent>>>,
+    keyboard: StdMutex<Option<std_mpsc::Sender<KeyInput>>>,
     keyframe: StdMutex<Option<Arc<AtomicBool>>>,
 }
 
 impl Direct {
     fn clear(&self) {
         *self.touch.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        *self.keyboard.lock().unwrap_or_else(|e| e.into_inner()) = None;
         *self.keyframe.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 }
@@ -144,6 +168,8 @@ pub(super) struct Displays {
     ops: Vec<Arc<tokio::sync::Mutex<()>>>,
     /// Outputs this run created and has not removed.
     outputs: Vec<bool>,
+    /// The PC screen a phone mirrors instead of getting a new one.
+    mirror: Vec<Option<String>>,
     seq: u64,
 }
 
@@ -161,6 +187,7 @@ impl Displays {
             grace: (0..n).map(|_| None).collect(),
             ops: (0..n).map(|_| Arc::default()).collect(),
             outputs: vec![false; n],
+            mirror: vec![None; n],
             seq: 0,
         }
     }
@@ -256,8 +283,21 @@ async fn run_link(
                             k.store(true, Ordering::Relaxed);
                         }
                     }
-                    FromPhone::Request { on } => {
-                        let _ = tx.send(Msg::Display(DisplayMsg::Request { slot, conn, on }));
+                    FromPhone::Request { on, mirror } => {
+                        let _ = tx.send(Msg::Display(DisplayMsg::Request { slot, conn, on, mirror }));
+                    }
+                    FromPhone::ListOutputs => {
+                        let _ = tx.send(Msg::Display(DisplayMsg::ListOutputs { slot, conn }));
+                    }
+                    FromPhone::Text(t) => {
+                        if let Some(k) = direct.keyboard.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+                            let _ = k.send(KeyInput::Text(t));
+                        }
+                    }
+                    FromPhone::Key(key) => {
+                        if let Some(k) = direct.keyboard.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+                            let _ = k.send(KeyInput::Key(key));
+                        }
                     }
                     _ => {}
                 },
@@ -346,8 +386,8 @@ impl Manager {
     pub(super) fn display_view_only(&self, i: usize) -> bool {
         let s = &self.slots[i];
         let saved = s.device_id().and_then(|id| self.devices.get(id)).and_then(|r| r.monitor_view_only);
-        // Touches drive the PC, so an unencrypted connection needs a clear yes.
-        saved.unwrap_or(s.transport == TransportKind::Legacy)
+        // Touch is on unless turned off, even on unencrypted adb tcpip.
+        saved.unwrap_or(false)
     }
 
     pub(super) fn display_view(&self, i: usize) -> DisplayView {
@@ -386,9 +426,9 @@ impl Manager {
             return Some("The phone is not connected".into());
         }
         match self.displays.helper[i] {
-            None => return Some("Wireless Debugging Keeper 0.8 or newer is needed on this phone".into()),
+            None => return Some("The Test Bed phone app 0.8 or newer is needed on this phone".into()),
             Some(v) if v < protocol::MIN_HELPER_VERSION => {
-                return Some(format!("This phone has Wireless Debugging Keeper {}; monitor mode needs 0.8 or newer", helper_version_name(v)));
+                return Some(format!("This phone has the Test Bed phone app {}; monitor mode needs 0.8 or newer", helper_version_name(v)));
             }
             Some(_) => {}
         }
@@ -427,6 +467,25 @@ impl Manager {
             }
         }
         self.feed(slot, SlotEvent::SetDisplay { on });
+    }
+
+    /// Tells the phone which PC screens it can mirror (numbered on its screen).
+    fn send_outputs(&self, i: usize) {
+        let (Some(host), Some(link)) = (self.displays.host.clone(), self.displays.links[i].as_ref()) else { return };
+        let link_tx = link.tx.clone();
+        tokio::spawn(async move {
+            let Ok(list) = tokio::task::spawn_blocking(move || host.outputs()).await else { return };
+            let outputs: Vec<Value> = list.iter().map(|o| json!({ "name": o.name, "w": o.width, "h": o.height })).collect();
+            let _ = link_tx.send(json!({ "op": "outputs", "outputs": outputs }));
+        });
+    }
+
+    /// The PC's own button: a new screen, not a mirror.
+    pub(super) fn request_display_from_pc(&mut self, slot: SlotId, on: bool) {
+        if let Some(i) = self.idx(slot) {
+            self.displays.mirror[i] = None;
+        }
+        self.request_display(slot, on, true);
     }
 
     pub(super) fn set_display_options(&mut self, slot: SlotId, view_only: Option<bool>, portrait: Option<bool>) {
@@ -484,9 +543,23 @@ impl Manager {
         let m = self.cfg.monitor.clone();
         let portrait = self.slots[i].device_id().and_then(|d| self.devices.get(d)).is_some_and(|r| r.monitor_portrait);
         let view_only = self.display_view_only(i);
+        let mirror = match self.displays.mirror[i].clone() {
+            None => None,
+            Some(name) => match host.outputs().into_iter().find(|o| o.name == name) {
+                Some(o) => Some(o),
+                None => {
+                    let error = format!("The PC has no screen called {name} any more");
+                    let _ = self.tx.send(Msg::Slot(slot, SlotEvent::DisplayFailed { id, error }));
+                    return;
+                }
+            },
+        };
+        // A mirrored screen keeps its shape, letterboxed on the phone.
+        let portrait = mirror.as_ref().map_or(portrait, |o| o.height > o.width);
         let (w, h) = hypr::phone_mode(hello.width, hello.height, portrait, m.max_size);
-        let output = output_name(slot);
-        let rule = hypr::monitor_rule(&output, w, h, m.fps, &m.position, m.scale);
+        let (w, h) = mirror.as_ref().map_or((w, h), |o| hypr::fit(o.width, o.height, (w, h)));
+        let output = mirror.as_ref().map_or_else(|| output_name(slot), |o| o.name.clone());
+        let rule = mirror.is_none().then(|| hypr::monitor_rule(&output, w, h, m.fps, &m.position, m.scale));
         let params = SessionParams {
             output: output.clone(),
             fps: m.fps,
@@ -494,19 +567,24 @@ impl Manager {
             min_bitrate_kbps: MIN_BITRATE_KBPS,
             encoder: m.encoder,
             render_node: m.render_node,
+            size: mirror.is_some().then_some((w, h)),
         };
-        self.displays.outputs[i] = true;
+        if rule.is_some() {
+            self.displays.outputs[i] = true;
+        }
         let (adb, tx, lock) = (self.adb.clone(), self.tx.clone(), self.displays.ops[i].clone());
         let video_addr = SocketAddr::new(adb.server().ip(), port);
         tokio::spawn(async move {
             let _held = lock.lock_owned().await;
             let fail = |error: String, retry: bool| Msg::Display(DisplayMsg::StartFailed { slot, id, error, retry });
-            let (h2, name) = (host.clone(), output.clone());
-            let created = tokio::task::spawn_blocking(move || h2.create(&name, &rule)).await;
-            match created {
-                Ok(Ok(())) => {}
-                Ok(Err(e)) => return drop(tx.send(fail(format!("Hyprland refused the new display: {e}"), false))),
-                Err(e) => return drop(tx.send(fail(e.to_string(), false))),
+            if let Some(rule) = rule {
+                let (h2, name) = (host.clone(), output.clone());
+                let created = tokio::task::spawn_blocking(move || h2.create(&name, &rule)).await;
+                match created {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => return drop(tx.send(fail(format!("Hyprland refused the new display: {e}"), false))),
+                    Err(e) => return drop(tx.send(fail(e.to_string(), false))),
+                }
             }
             let _ = link_tx.send(json!({ "op": "start", "portrait": portrait, "view_only": view_only }));
             // Over ADB because Android lets the shell open a screen at any time,
@@ -543,6 +621,14 @@ impl Manager {
                         let _ = tx.send(Msg::Toast(None, format!("Touch will not control the PC: {e}")));
                     }
                     Err(e) => tracing::warn!(slot, "no pointer for the monitor: {e}"),
+                }
+                let h2 = host.clone();
+                match tokio::task::spawn_blocking(move || h2.keyboard()).await {
+                    Ok(Ok(keyboard)) => {
+                        let _ = tx.send(Msg::Display(DisplayMsg::KeyboardReady { slot, id, keyboard }));
+                    }
+                    Ok(Err(e)) => tracing::warn!(slot, "no keyboard for the monitor: {e}"),
+                    Err(e) => tracing::warn!(slot, "no keyboard for the monitor: {e}"),
                 }
             }
             let events = tx.clone();
@@ -620,16 +706,32 @@ impl Manager {
                 let Some(link) = self.displays.links[i].as_mut().filter(|l| l.conn == conn) else { return };
                 link.ready = Some((hello, port));
                 self.displays.helper[i] = Some(hello.version);
+                self.send_outputs(i);
                 if let Some((id, serial, shell_v2)) = self.displays.waiting[i].take() {
                     self.launch_display(i, id, serial, shell_v2);
                 } else if hello.requested {
                     self.request_display(slot, true, true);
                 }
             }
-            M::Request { slot, conn, on } => {
+            M::Request { slot, conn, on, mirror } => {
+                let Some(i) = self.idx(slot) else { return };
+                if !self.displays.links[i].as_ref().is_some_and(|l| l.conn == conn) {
+                    return;
+                }
+                let mirror = mirror.filter(|_| on);
+                let changed = self.displays.mirror[i] != mirror;
+                self.displays.mirror[i] = mirror;
+                if on && changed && self.slots[i].display_desired {
+                    // Already showing something: switch to what was picked.
+                    self.feed(slot, SlotEvent::RestartDisplay);
+                } else {
+                    self.request_display(slot, on, true);
+                }
+            }
+            M::ListOutputs { slot, conn } => {
                 let Some(i) = self.idx(slot) else { return };
                 if self.displays.links[i].as_ref().is_some_and(|l| l.conn == conn) {
-                    self.request_display(slot, on, true);
+                    self.send_outputs(i);
                 }
             }
             M::LinkClosed { slot, conn } => {
@@ -643,6 +745,12 @@ impl Manager {
                 // Dropping it otherwise ends the pointer's thread.
                 if self.display_current(i, id) && !self.display_view_only(i) {
                     *self.displays.direct[i].touch.lock().unwrap_or_else(|e| e.into_inner()) = Some(pointer);
+                }
+            }
+            M::KeyboardReady { slot, id, keyboard } => {
+                let Some(i) = self.idx(slot) else { return };
+                if self.display_current(i, id) && !self.display_view_only(i) {
+                    *self.displays.direct[i].keyboard.lock().unwrap_or_else(|e| e.into_inner()) = Some(keyboard);
                 }
             }
             M::Started { slot, id, guard, encoder_flag } => {
@@ -691,7 +799,7 @@ impl Manager {
                 let Some(i) = self.idx(slot) else { return };
                 if self.displays.waiting[i].as_ref().is_some_and(|(w, _, _)| *w == id) {
                     self.displays.waiting[i] = None;
-                    let error = "Wireless Debugging Keeper did not answer. Open it once on the phone, then try again.".to_owned();
+                    let error = "The Test Bed phone app did not answer. Open it once on the phone, then try again.".to_owned();
                     self.feed(slot, SlotEvent::DisplayFailed { id, error });
                 }
             }

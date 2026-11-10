@@ -116,6 +116,7 @@ fn general(ctx: &Ctx, cfg: &Config) -> adw::PreferencesPage {
     let g = ctx.group(&p, "Phones", "");
     ctx.spin(&g, "Phone slots", "How many phones fit in the window. Takes effect after restarting the app", (1, ac_core::MAX_SLOTS as u32, 1), cfg.general.max_slots as u32, |c, v| c.general.max_slots = v as u8);
     ctx.switch(&g, "Reconnect saved phones automatically", "Connect to known phones as soon as they show up on the network", cfg.discovery.auto_connect_known, |c, v| c.discovery.auto_connect_known = v);
+    ctx.switch(&g, "Keep the same Wi-Fi port", "Also switch phones to adb tcpip on port 5555, which survives Wi-Fi drops (not reboots). Its traffic is not encrypted", cfg.discovery.pin_wifi_port, |c, v| c.discovery.pin_wifi_port = v);
 
     let g = ctx.group(&p, "Appearance", "");
     const SCHEMES: &[(&str, &str)] = &[("system", "Follow system"), ("light", "Light"), ("dark", "Dark")];
@@ -221,6 +222,7 @@ fn files(ctx: &Ctx, cfg: &Config) -> adw::PreferencesPage {
     ctx.combo(&g, "When the phone already has the file", "", CONFLICT, &cfg.transfer.on_conflict, |c, v| c.transfer.on_conflict = v.into());
     const APK: &[(&str, &str)] = &[("install", "Install it"), ("push", "Copy it as a file"), ("ask", "Ask each time")];
     ctx.combo(&g, "Dropping an APK", "Hold Shift while dropping to do the other one", APK, &cfg.transfer.apk_drop_action, |c, v| c.transfer.apk_drop_action = v.into());
+    ctx.switch(&g, "Install without prompts", "Skips Play Protect's scan of installs, and the helper taps Install on phones without ADB", cfg.transfer.skip_install_verification, |c, v| c.transfer.skip_install_verification = v);
     ctx.switch(&g, "Add photos, videos and music to the gallery", "", cfg.transfer.trigger_media_scan, |c, v| c.transfer.trigger_media_scan = v);
     const VERIFY: &[(&str, &str)] = &[("large", "For files of 64 MB or more"), ("always", "Always"), ("never", "Never")];
     ctx.combo(&g, "Check files arrived intact", "Compares a checksum after sending", VERIFY, &cfg.transfer.verify_checksum, |c, v| c.transfer.verify_checksum = v.into());

@@ -1,5 +1,5 @@
 //! Main window: one card per slot (`general.max_slots`) in the grid layout
-//! of spec §6.1, the "Nearby" list, a status bar, broadcast input (§4.10),
+//! of spec §6.1, the Phones and PC tabs, a status bar, broadcast input (§4.10),
 //! and the focus view (§6.2: one phone large, live thumbnails of the others,
 //! and a hardware-button rail).
 
@@ -18,7 +18,6 @@ use ac_device::{
     AppAction, ManagerHandle, NearbyView, PhaseView, SlotIo, SlotView, StreamProfile, StreamView, TransferView, UiCommand, UiEvent,
     UsbDeviceView,
 };
-use ac_discovery::ServiceKind;
 use ac_input::keymap::android;
 use ac_media::MediaContext;
 use ac_input::broadcast::orientation_differs;
@@ -67,6 +66,8 @@ togglebutton.stay-awake:checked { color: @accent_color; background: alpha(@accen
 .result-chip.success { color: @success_color; }
 .result-chip.error { color: @error_color; }
 .perf-graph { border-radius: 4px; }
+.remote-bar { padding: 6px 12px; border-bottom: 1px solid alpha(currentColor, 0.1); }
+.remote-panel { background: alpha(@window_bg_color, 0.9); color: @window_fg_color; border-radius: 12px; padding: 12px 16px; }
 togglebutton.record-toggle:checked { color: @error_color; background: alpha(@error_color, 0.15); }
 "#;
 
@@ -97,6 +98,10 @@ pub struct App {
     thumbs: Vec<Thumb>,
     io: Vec<Arc<SlotIo>>,
     media: Option<Arc<MediaContext>>,
+    /// The PC tab.
+    remote: Rc<crate::remote::RemoteTab>,
+    /// The Phones and PC pages.
+    pages: gtk::Stack,
     inputs: Vec<Rc<SlotInput>>,
     /// The focus view's mirror per slot (the grid's live in the cards).
     focus_pictures: Vec<gtk::Picture>,
@@ -124,8 +129,6 @@ pub struct App {
     clipboard_autosync: Cell<bool>,
     /// Last text the phone put on the clipboard, to avoid echoing it back.
     last_from_device: RefCell<Option<String>>,
-    nearby_list: gtk::ListBox,
-    nearby_button: gtk::MenuButton,
     reconnect_spinner: adw::Spinner,
     /// The grid, or the welcome page while no slot has a phone.
     home: gtk::Stack,
@@ -248,30 +251,6 @@ pub fn build(
     grid.set_margin_end(12);
     grid.set_vexpand(true);
 
-    // Nearby phones: a toolbar button's popover.
-    let nearby_group = adw::PreferencesGroup::builder()
-        .title("Nearby")
-        .description("Phones advertising wireless debugging on this network")
-        .margin_start(6)
-        .margin_end(6)
-        .margin_top(6)
-        .margin_bottom(6)
-        .build();
-    let nearby_list = gtk::ListBox::new();
-    nearby_list.add_css_class("boxed-list");
-    nearby_list.set_selection_mode(gtk::SelectionMode::None);
-    nearby_group.add(&nearby_list);
-    let nearby_scroll = gtk::ScrolledWindow::builder()
-        .child(&nearby_group)
-        .hscrollbar_policy(gtk::PolicyType::Never)
-        .propagate_natural_height(true)
-        .max_content_height(480)
-        .min_content_width(460)
-        .build();
-    let nearby_button = gtk::MenuButton::builder()
-        .popover(&gtk::Popover::builder().child(&nearby_scroll).build())
-        .tooltip_text("Phones on this network or USB that can be added")
-        .build();
     let reconnect_spinner = adw::Spinner::builder().visible(false).build();
     let reconnect_content = adw::ButtonContent::builder().icon_name("view-refresh-symbolic").label("Reconnect").build();
     let reconnect_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
@@ -311,7 +290,7 @@ pub fn build(
     let welcome = adw::StatusPage::builder()
         .icon_name("phone-symbolic")
         .title("No phones yet")
-        .description("Add a phone with Add Device, or pick one under Nearby in the toolbar")
+        .description("Add a phone with Add Device")
         .child(&welcome_add)
         .vexpand(true)
         .build();
@@ -348,13 +327,38 @@ pub fn build(
     let views = gtk::Stack::builder().transition_type(gtk::StackTransitionType::Crossfade).transition_duration(150).build();
     views.add_named(&content, Some("grid"));
     views.add_named(&focus_page, Some("focus"));
-    toasts.set_child(Some(&views));
+
+    // Phones (everything above) and PC, chosen with the tabs in the toolbar.
+    let pages = gtk::Stack::builder().transition_type(gtk::StackTransitionType::Crossfade).transition_duration(150).build();
+    pages.add_named(&views, Some("phones"));
+    toasts.set_child(Some(&pages));
+    let phones_tab = gtk::ToggleButton::builder()
+        .child(&adw::ButtonContent::builder().icon_name("phone-symbolic").label("Phones").build())
+        .tooltip_text("The connected phones")
+        .active(true)
+        .build();
+    let pc_tab = gtk::ToggleButton::builder()
+        .child(&adw::ButtonContent::builder().icon_name("computer-symbolic").label("PC").build())
+        .tooltip_text("Share this PC, and control other PCs on your network")
+        .group(&phones_tab)
+        .build();
+    let tabs = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    tabs.append(&phones_tab);
+    tabs.append(&pc_tab);
 
     let toolbar = adw::ToolbarView::new();
     toolbar.add_top_bar(&header);
     toolbar.set_content(Some(&toasts));
     toolbar.add_bottom_bar(&status);
     window.set_content(Some(&toolbar));
+    let remote = crate::remote::RemoteTab::new(
+        &window,
+        &toasts,
+        &toolbar,
+        manager.media.clone(),
+        cfg.video.graphics_offload != "never",
+    );
+    pages.add_named(&remote.root, Some("pc"));
 
     let app_rc = Rc::new_cyclic(|weak: &std::rc::Weak<App>| {
         let on_action: Rc<dyn Fn(SlotId, CardAction)> = {
@@ -409,6 +413,8 @@ pub fn build(
         }
         App {
             window: window.clone(),
+            remote: remote.clone(),
+            pages: pages.clone(),
             toasts,
             grid: grid.clone(),
             cards,
@@ -438,8 +444,6 @@ pub fn build(
             video: RefCell::new(vec![VideoBook::default(); slots as usize]),
             clipboard_autosync: Cell::new(cfg.input.clipboard_autosync),
             last_from_device: RefCell::new(None),
-            nearby_list,
-            nearby_button: nearby_button.clone(),
             reconnect_spinner: reconnect_spinner.clone(),
             home: content.clone(),
             status,
@@ -479,11 +483,43 @@ pub fn build(
 
     let test_bar = TestBar::new(
         &app_rc,
-        &[add_button.upcast_ref(), reconnect_button.upcast_ref(), nearby_button.upcast_ref()],
+        &[add_button.upcast_ref(), reconnect_button.upcast_ref()],
+        tabs.upcast_ref(),
         &[mirror_toggle.upcast_ref(), broadcast_toggle.upcast_ref()],
     );
     toolbar.add_top_bar(&test_bar.root);
+    // The active tab is blue, the other the plain gray of a button. The
+    // phone tools below the tabs only apply to the Phones page.
+    phones_tab.add_css_class("suggested-action");
+    for (tab, page) in [(&phones_tab, "phones"), (&pc_tab, "pc")] {
+        let (pages, tools) = (pages.clone(), test_bar.phone_tools.clone());
+        tab.connect_toggled(move |tab| {
+            if tab.is_active() {
+                tab.add_css_class("suggested-action");
+                pages.set_visible_child_name(page);
+                tools.set_visible(page == "phones");
+            } else {
+                tab.remove_css_class("suggested-action");
+            }
+        });
+    }
     *app_rc.test_bar.borrow_mut() = Some(test_bar);
+    if saved.page == "pc" {
+        pc_tab.set_active(true);
+    }
+    {
+        // `test-bed --connect <fingerprint>`: another PC switched sides and
+        // its share service asks this Test Bed to connect back.
+        let connect = gtk::gio::SimpleAction::new("remote-connect", Some(glib::VariantTy::STRING));
+        let (window, remote, pc_tab) = (app_rc.window.clone(), app_rc.remote.clone(), pc_tab.clone());
+        connect.connect_activate(move |_, fp| {
+            let Some(fp) = fp.and_then(|v| v.str()) else { return };
+            window.present();
+            pc_tab.set_active(true);
+            remote.connect_fingerprint(fp);
+        });
+        app.add_action(&connect);
+    }
 
     install_actions(&app_rc, app);
     install_shortcuts(&app_rc, cfg);
@@ -579,7 +615,6 @@ pub fn build(
         });
     }
 
-    app_rc.render_nearby();
     app_rc.render_status();
     if let Some(msg) = config_error {
         app_rc.toast(&msg);
@@ -728,6 +763,9 @@ fn install_shortcuts(app: &Rc<App>, cfg: &ac_config::Config) {
 impl App {
     /// Runs a shortcut; false lets the key through (e.g. no phone streaming).
     fn shortcut(self: &Rc<Self>, name: &str) -> bool {
+        if self.remote.grabbing() {
+            return false; // the remote PC has the keyboard
+        }
         if let Some(n) = name.strip_prefix("focus_slot_").and_then(|n| n.parse::<SlotId>().ok()) {
             if (n as usize) > self.cards.len() || !self.streaming(n) {
                 return false;
@@ -1069,7 +1107,6 @@ impl App {
                 }
                 self.refresh_rail_stay_awake();
                 self.render_status();
-                self.render_nearby();
                 self.refresh_layout();
                 self.refresh_thumbs();
                 self.refresh_broadcast();
@@ -1090,14 +1127,12 @@ impl App {
             }
             UiEvent::Nearby(list) => {
                 self.state.borrow_mut().nearby = list.clone();
-                self.render_nearby();
                 if let Some(dlg) = self.pairing_dialog() {
                     dlg.update_nearby(&list);
                 }
             }
             UiEvent::UsbDevices(list) => {
                 self.state.borrow_mut().usb = list.clone();
-                self.render_nearby();
                 if let Some(dlg) = self.pairing_dialog() {
                     dlg.update_usb(&list);
                 }
@@ -1837,6 +1872,7 @@ impl App {
         let (width, height) = self.window.default_size();
         st.window = WindowState { width, height, maximized: self.window.is_maximized() };
         st.view = if self.focused.get().is_some() { "focus" } else { "grid" }.into();
+        st.page = self.pages.visible_child_name().map_or("phones".into(), |n| n.to_string());
         if let Some(f) = self.focused.get() {
             st.focused_slot = f;
         }
@@ -1919,72 +1955,6 @@ impl App {
             line.push_str(&format!("  ·  ↓ {:.1} Mbit/s", kbps as f64 / 1000.0));
         }
         self.status.set_label(&line);
-    }
-
-    fn render_nearby(&self) {
-        self.nearby_list.remove_all();
-        let st = self.state.borrow();
-        let mut rows = 0;
-        let found = st.nearby.iter().filter(|n| n.in_slot.is_none() && !n.instance.starts_with("studio-")).count() + st.usb.len();
-        let label = if found == 0 { "Nearby".to_owned() } else { format!("Nearby ({found})") };
-        self.nearby_button.set_child(Some(&adw::ButtonContent::builder().icon_name("network-wireless-symbolic").label(&label).build()));
-        for n in st.nearby.iter().filter(|n| n.in_slot.is_none() && !n.instance.starts_with("studio-")) {
-            let title = n.known_name.clone().or_else(|| n.serial.clone()).unwrap_or_else(|| n.instance.clone());
-            let row = adw::ActionRow::builder().title(&title).build();
-            row.add_prefix(&gtk::Image::from_icon_name("phone-symbolic"));
-            let (subtitle, label) = match n.kind {
-                ServiceKind::Pairing => (format!("Ready to pair · {}", n.addr), "Pair…"),
-                ServiceKind::Connect => (format!("Wireless debugging · {}", n.addr), "Connect"),
-                ServiceKind::Legacy => (format!("adb tcpip · {}", n.addr), "Connect"),
-                ServiceKind::Direct if n.paired => (format!("No ADB · {}", n.addr), "Connect"),
-                ServiceKind::Direct if n.pairing_open => (format!("Ready to pair without ADB · {}", n.addr), "Pair…"),
-                ServiceKind::Direct => (format!("Helper without ADB · {} · tap Pair with PC on the phone", n.addr), "Pair…"),
-            };
-            row.set_subtitle(&subtitle);
-            let button = gtk::Button::builder().label(label).valign(gtk::Align::Center).build();
-            let (cmds, kind, addr, paired) = (self.commands.clone(), n.kind, n.addr.to_string(), n.paired);
-            let window = self.window.clone();
-            button.connect_clicked(move |_| match kind {
-                ServiceKind::Pairing => {
-                    let _ = WidgetExt::activate_action(&window, "win.pair-code", None);
-                }
-                ServiceKind::Direct if !paired => {
-                    let _ = WidgetExt::activate_action(&window, "win.pair-direct", None);
-                }
-                _ => {
-                    let _ = cmds.try_send(UiCommand::Connect { slot: None, addr: addr.clone() });
-                }
-            });
-            row.add_suffix(&button);
-            self.nearby_list.append(&row);
-            rows += 1;
-        }
-        for d in &st.usb {
-            let row = adw::ActionRow::builder().title(&d.model).subtitle(format!("USB · {}", d.serial)).build();
-            row.add_prefix(&gtk::Image::from_icon_name("media-removable-symbolic"));
-            if d.authorized {
-                let b = gtk::Button::builder().label("Enable Wi-Fi ADB").valign(gtk::Align::Center).build();
-                let (cmds, serial) = (self.commands.clone(), d.serial.clone());
-                b.connect_clicked(move |b| {
-                    b.set_sensitive(false);
-                    let _ = cmds.try_send(UiCommand::EnableWifiAdb { usb_serial: serial.clone(), slot: None });
-                });
-                row.add_suffix(&b);
-            } else {
-                row.set_subtitle("USB · accept the debugging prompt on the phone");
-            }
-            self.nearby_list.append(&row);
-            rows += 1;
-        }
-        if rows == 0 {
-            let row = adw::ActionRow::builder()
-                .title("No phones found yet")
-                .subtitle("On the phone: Settings › Developer options › Wireless debugging (phone on the same network as this PC)")
-                .build();
-            let spinner = gtk::Spinner::builder().spinning(true).build();
-            row.add_prefix(&spinner);
-            self.nearby_list.append(&row);
-        }
     }
 }
 

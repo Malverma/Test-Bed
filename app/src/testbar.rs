@@ -20,6 +20,8 @@ type MakeAction = fn(String) -> AppAction;
 
 pub struct TestBar {
     pub root: gtk::Box,
+    /// The app, capture and input row: phone tools, hidden on the PC tab.
+    pub phone_tools: gtk::FlowBox,
     run_name: gtk::Entry,
     run_button: gtk::Button,
     run_status: gtk::Label,
@@ -57,9 +59,10 @@ fn section(title: &str) -> gtk::Box {
 }
 
 impl TestBar {
-    /// `phones`: the Add Device and Nearby buttons, shown first;
-    /// `input`: Mirror clicks and Broadcast, beside the captures.
-    pub fn new(app: &Rc<App>, phones: &[&gtk::Widget], input: &[&gtk::Widget]) -> Rc<Self> {
+    /// `phones`: the Add Device and Reconnect buttons, shown first; `tabs`:
+    /// the Phones and PC tabs, centered; `input`: Mirror clicks and
+    /// Broadcast, beside the captures.
+    pub fn new(app: &Rc<App>, phones: &[&gtk::Widget], tabs: &gtk::Widget, input: &[&gtk::Widget]) -> Rc<Self> {
         let weak = Rc::downgrade(app);
 
         let phones_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
@@ -140,8 +143,8 @@ impl TestBar {
             input_box.append(*w);
         }
 
-        // Two rows: phones and the run; then the app, captures and input
-        // (each row wraps only when the window is too narrow for it).
+        // Two rows: phones, the tabs and the run (at the far right); then the
+        // app, captures and input (wrapping only when the window is too narrow).
         let flow = |parts: &[&gtk::Box]| {
             let f = gtk::FlowBox::builder()
                 .selection_mode(gtk::SelectionMode::None)
@@ -156,12 +159,15 @@ impl TestBar {
             f
         };
         let row = gtk::Box::new(gtk::Orientation::Vertical, 6);
-        row.append(&flow(&[&phones_box, &run_box]));
-        row.append(&flow(&[&app_box, &cap_box, &input_box]));
+        let top = gtk::CenterBox::builder().start_widget(&phones_box).center_widget(tabs).end_widget(&run_box).build();
+        let phone_tools = flow(&[&app_box, &cap_box, &input_box]);
+        row.append(&top);
+        row.append(&phone_tools);
         row.add_css_class("test-bar");
 
         let bar = Rc::new(Self {
             root: row,
+            phone_tools,
             run_name,
             run_button,
             run_status,

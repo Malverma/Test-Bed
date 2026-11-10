@@ -71,7 +71,7 @@ pub enum UiCommand {
     SetDisplay { slot: SlotId, on: bool },
     /// This phone's monitor options; applied at once if it is one now.
     SetDisplayOptions { slot: SlotId, view_only: Option<bool>, portrait: Option<bool> },
-    /// Install the Wireless Debugging Keeper this app ships over an older one.
+    /// Install the Test Bed phone app this app ships over an older one.
     UpdateHelper { slot: SlotId },
     /// The user's answer to `UiEvent::Confirm`.
     Confirm { id: u64, ok: bool },

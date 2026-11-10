@@ -67,8 +67,14 @@ pub struct Hello {
 #[derive(Debug, Clone, PartialEq)]
 pub enum FromPhone {
     Hello(Hello),
-    /// Its button: on or off.
-    Request { on: bool },
+    /// Its button: on or off; `mirror` names a PC screen to show instead of a new one.
+    Request { on: bool, mirror: Option<String> },
+    /// The phone wants the PC's screens listed (`{"op":"outputs"}` answers).
+    ListOutputs,
+    /// Typed on the phone's keyboard.
+    Text(String),
+    /// A key from [`crate::keyboard::NAMED_KEYS`].
+    Key(String),
     Touch(crate::touch::TouchEvent),
     Keyframe,
     Pong,
@@ -86,7 +92,13 @@ pub fn parse_message(v: &Value) -> FromPhone {
             avc: flag("avc"),
             requested: flag("requested"),
         }),
-        Some("monitor_request") => FromPhone::Request { on: flag("on") },
+        Some("monitor_request") => FromPhone::Request {
+            on: flag("on"),
+            mirror: v.get("mirror").and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_owned),
+        },
+        Some("list_outputs") => FromPhone::ListOutputs,
+        Some("text") => v.get("text").and_then(Value::as_str).map_or(FromPhone::Other, |t| FromPhone::Text(t.to_owned())),
+        Some("key") => v.get("key").and_then(Value::as_str).map_or(FromPhone::Other, |k| FromPhone::Key(k.to_owned())),
         Some("touch") => crate::touch::TouchEvent::from_json(v).map_or(FromPhone::Other, FromPhone::Touch),
         Some("keyframe") => FromPhone::Keyframe,
         Some("pong") => FromPhone::Pong,
@@ -127,7 +139,14 @@ mod tests {
             parse_message(&hello),
             FromPhone::Hello(Hello { version: 8, width: 1080, height: 2400, avc: true, requested: true })
         );
-        assert_eq!(parse_message(&json!({"op":"monitor_request","on":false})), FromPhone::Request { on: false });
+        assert_eq!(parse_message(&json!({"op":"monitor_request","on":false})), FromPhone::Request { on: false, mirror: None });
+        assert_eq!(
+            parse_message(&json!({"op":"monitor_request","on":true,"mirror":"DP-1"})),
+            FromPhone::Request { on: true, mirror: Some("DP-1".into()) }
+        );
+        assert_eq!(parse_message(&json!({"op":"list_outputs"})), FromPhone::ListOutputs);
+        assert_eq!(parse_message(&json!({"op":"text","text":"hi"})), FromPhone::Text("hi".into()));
+        assert_eq!(parse_message(&json!({"op":"key","key":"Return"})), FromPhone::Key("Return".into()));
         assert_eq!(parse_message(&json!({"op":"keyframe"})), FromPhone::Keyframe);
         assert_eq!(parse_message(&json!({"op":"future"})), FromPhone::Other);
         assert_eq!(parse_message(&json!({"op":"touch","a":"bad"})), FromPhone::Other);

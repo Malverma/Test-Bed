@@ -165,16 +165,16 @@ public final class KeeperService extends Service {
         if (!Keeper.hasWirelessDebugging()) {
             // Android 10 and older: no wireless debugging; the PC reaches the
             // phone with adb tcpip, so only keeping Wi-Fi connected matters.
-            show(Keeper.onWifi(this) ? "Keeping Wi-Fi connected (this Android has no wireless debugging)"
-                    : "Waiting for Wi-Fi to connect", false);
+            show(Keeper.onWifi(this) ? "Keeping Wi-Fi connected"
+                    : "Waiting for Wi-Fi", false);
             return;
         }
         if (!Keeper.canWriteSettings(this)) {
-            show("Needs one-time setup from the PC (tap for details)", true);
+            show("Needs setup from the PC", true);
             return;
         }
         if (!Keeper.onWifi(this)) {
-            show(Keeper.wifiSwitchedOn(this) ? "Waiting for Wi-Fi to connect" : "Wi-Fi is off", false);
+            show(Keeper.wifiSwitchedOn(this) ? "Waiting for Wi-Fi" : "Wi-Fi is off", false);
             return;
         }
         if (Keeper.wirelessDebuggingOn(this)) {
@@ -186,7 +186,7 @@ public final class KeeperService extends Service {
         if (attempts.size() >= MAX_ATTEMPTS_PER_MINUTE) {
             // Android keeps refusing: usually this Wi-Fi network was never
             // allowed ("Always allow on this network") for wireless debugging.
-            show("Android keeps turning wireless debugging off. Turn it on once by hand on this Wi-Fi and tick \"Always allow on this network\"", true);
+            show("Android keeps refusing: turn wireless debugging on by hand once and tick \"Always allow on this network\"", true);
             schedule(60_000);
             return;
         }
@@ -213,13 +213,13 @@ public final class KeeperService extends Service {
         if (now - disconnectedSince < after || now < nextRestartAt) return;
         restarts++;
         Log.i(Keeper.TAG, "Wi-Fi on but disconnected for " + (now - disconnectedSince) / 1000 + " s: restarting Wi-Fi (try " + restarts + ")");
-        show("Wi-Fi did not reconnect: restarting Wi-Fi (try " + restarts + ")", false);
+        show("Restarting stuck Wi-Fi (try " + restarts + ")", false);
         nextRestartAt = now + backoffMs;
         backoffMs = Math.min(backoffMs * 2, WATCHDOG_MAX_BACKOFF_MS);
         if (Keeper.setWifi(this, false)) {
             handler.postDelayed(() -> Keeper.setWifi(this, true), 3_000);
         } else {
-            show("Wi-Fi did not reconnect, and Android refused to restart it", true);
+            show("Wi-Fi stuck; Android refused to restart it", true);
         }
     }
 
@@ -242,7 +242,7 @@ public final class KeeperService extends Service {
         Notification.Builder b = Keeper.isAtLeast(26) ? new Notification.Builder(this, CHANNEL) : new Notification.Builder(this);
         return b
                 .setSmallIcon(android.R.drawable.stat_notify_sync_noanim)
-                .setContentTitle("Wireless Debugging Keeper")
+                .setContentTitle("Test Bed")
                 .setContentText(text)
                 .setStyle(new Notification.BigTextStyle().bigText(text))
                 .setContentIntent(open)

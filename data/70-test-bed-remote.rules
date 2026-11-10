@@ -1,0 +1,3 @@
+# Test Bed: let the logged-in (seat) user create the virtual keyboard and
+# mouse that paired computers use to control this PC (PC tab, Share this PC).
+KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uinput"

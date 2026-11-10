@@ -231,7 +231,7 @@ public final class DirectService extends Service {
         JSONObject req = Proto.read(in);
         String code = Direct.pairCode();
         if (code == null) {
-            Proto.error(out, "Pairing is not open on the phone: tap \"Pair with PC\" in Wireless Debugging Keeper");
+            Proto.error(out, "Pairing is not open on the phone: tap \"Pair with PC\" in the Test Bed app");
             return;
         }
         String pcId = req.optString("pc_id"), pcName = req.optString("pc_name", "PC");

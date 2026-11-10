@@ -28,7 +28,7 @@ pub struct DeviceRecord {
     pub last_address: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wifi_mac: Option<String>,
-    /// The Wireless Debugging Keeper's random id, which its locator reports
+    /// The Test Bed phone app's random id, which its locator reports
     /// when the phone is searched for on the network (spec2 §4.3).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keeper_id: Option<String>,

@@ -12,6 +12,8 @@ pub struct AppState {
     pub window: WindowState,
     /// `"grid"` or `"focus"`.
     pub view: String,
+    /// The tab: `"phones"` or `"pc"`.
+    pub page: String,
     /// Slot shown in the focus view; 0 = none.
     pub focused_slot: SlotId,
     pub broadcast: BroadcastState,
@@ -25,6 +27,7 @@ impl Default for AppState {
             schema_version: SCHEMA_VERSION,
             window: WindowState::default(),
             view: "grid".into(),
+            page: "phones".into(),
             focused_slot: 0,
             broadcast: BroadcastState::default(),
             last_pair_tab: "qr".into(),

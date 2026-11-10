@@ -556,6 +556,9 @@ pub struct PushRequest {
     /// Identifies a partial upload to resume.
     pub job: u64,
     pub install: bool,
+    /// The helper taps through Android's install prompts itself (0.9+; needs
+    /// touch control). Older helpers ignore it and the user confirms.
+    pub auto_confirm: bool,
     /// `rename`, `overwrite` or `skip`.
     pub conflict: String,
 }
@@ -570,7 +573,7 @@ pub enum PushStart {
 pub async fn open_push(addr: SocketAddr, creds: &Credentials, expect: &str, r: &PushRequest) -> Result<(TcpStream, PushStart), Error> {
     let params = json!({
         "name": r.name, "dir": r.dir, "size": r.size, "job": format!("{:016x}", r.job),
-        "install": r.install, "conflict": r.conflict,
+        "install": r.install, "auto_confirm": r.auto_confirm, "conflict": r.conflict,
     });
     let s = open(addr, creds, Some(expect), Purpose::Push, params).await?;
     if s.reply.get("skip").and_then(Value::as_bool).unwrap_or(false) {

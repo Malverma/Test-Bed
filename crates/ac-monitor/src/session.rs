@@ -33,6 +33,8 @@ pub struct SessionParams {
     pub min_bitrate_kbps: u32,
     pub encoder: String,
     pub render_node: String,
+    /// Scale the picture to this size (mirroring a PC screen); `None` sends it as captured.
+    pub size: Option<(u32, u32)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -181,13 +183,20 @@ fn run(p: &SessionParams, video: TcpStream, stop: &AtomicBool, keyframe: &Atomic
         let Some(frame) = cap.ready(0) else { continue };
         let info = frame.info;
         let want_kbps = rate.kbps();
+        let (out_w, out_h) = p.size.unwrap_or((info.width, info.height));
         if encoder.as_ref().is_none_or(|e| {
-            e.params.width != info.width || e.params.height != info.height || e.params.src_fmt != info.pixel() || e.params.bitrate_kbps != want_kbps
+            e.params.src_width != info.width
+                || e.params.src_height != info.height
+                || (e.params.width, e.params.height) != (out_w, out_h)
+                || e.params.src_fmt != info.pixel()
+                || e.params.bitrate_kbps != want_kbps
         }) {
             drop(encoder.take()); // only one encoder at a time on small GPUs
             let params = Params {
-                width: info.width,
-                height: info.height,
+                width: out_w,
+                height: out_h,
+                src_width: info.width,
+                src_height: info.height,
                 src_fmt: info.pixel(),
                 fps: p.fps,
                 bitrate_kbps: want_kbps,
@@ -216,7 +225,7 @@ fn run(p: &SessionParams, video: TcpStream, stop: &AtomicBool, keyframe: &Atomic
                     window.bytes += size as u64;
                     if !live {
                         live = true;
-                        on_event(SessionEvent::Live { width: info.width, height: info.height, encoder: kind });
+                        on_event(SessionEvent::Live { width: out_w, height: out_h, encoder: kind });
                     }
                 }
                 Err(TrySendError::Full(_)) => {

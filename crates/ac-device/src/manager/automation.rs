@@ -839,7 +839,7 @@ async fn dev(ctx: &Ctx, t: &Target, req: Value) -> Result<Value, DevErr> {
         (None, Some((cmds, version))) => {
             if *version < ac_direct::HELPER_V7 {
                 return Err(DevErr::Unavailable(format!(
-                    "{} has Wireless Debugging Keeper older than 0.7: update it (the app offers it on the phone's tile)",
+                    "{} has the Test Bed phone app older than 0.7: update it (the app offers it on the phone's tile)",
                     t.name
                 )));
             }
@@ -851,7 +851,7 @@ async fn dev(ctx: &Ctx, t: &Target, req: Value) -> Result<Value, DevErr> {
     };
     match v.get("error").and_then(Value::as_str) {
         Some(e) if v.get("need_input").and_then(Value::as_bool).unwrap_or(false) => Err(DevErr::Unavailable(format!(
-            "{e}. On {}: Settings › Accessibility › Wireless Debugging Keeper, switch it on",
+            "{e}. On {}: Settings › Accessibility › Test Bed touch control, switch it on",
             t.name
         ))),
         Some(e) => Err(DevErr::Failed(e.to_owned())),
@@ -1047,7 +1047,7 @@ async fn app(ctx: &Ctx, t: &Target, action: AppAction) -> Result<String, String>
     }
     let Some((cmds, version)) = &t.link else { return Err("the phone disconnected".into()) };
     if *version < ac_direct::HELPER_V6 {
-        return Err("Update Wireless Debugging Keeper on this phone (0.6 or newer) for app actions".into());
+        return Err("Update the Test Bed phone app on this phone (0.6 or newer) for app actions".into());
     }
     let (tx, rx) = oneshot::channel();
     cmds.send(LinkCmd::App { action, reply: Some(tx) }).map_err(|_| "the phone disconnected".to_owned())?;

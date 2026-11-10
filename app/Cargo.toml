@@ -14,6 +14,7 @@ ac-device.workspace = true
 ac-discovery.workspace = true
 ac-input.workspace = true
 ac-media.workspace = true
+ac-remote = { path = "../crates/ac-remote" }
 ac-scrcpy.workspace = true
 ac-transfer.workspace = true
 gtk.workspace = true
@@ -23,3 +24,4 @@ async-channel.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 qrcode.workspace = true
+anyhow.workspace = true

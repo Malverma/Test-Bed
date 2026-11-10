@@ -14,6 +14,7 @@ import android.util.Log;
 import android.view.Surface;
 import android.view.WindowManager;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.BufferedInputStream;
@@ -63,7 +64,13 @@ final class Monitor {
     private static volatile boolean viewOnly;
     private static volatile String status = "";
     private static volatile long requestedAt;
+    /** The PC screen a pending request asked to mirror, or null for a new screen. */
+    private static volatile String requestedMirror;
     private static volatile MonitorActivity activity;
+    /** The PC's own screens, left to right, which this phone may mirror. */
+    private static volatile String[] outputs = new String[0];
+    /** The picture's size, so the screen can keep its shape. */
+    private static volatile int videoW, videoH;
     private static final Object surfaceLock = new Object();
     private static Surface surface;
 
@@ -87,6 +94,41 @@ final class Monitor {
         return status;
     }
 
+    static String[] outputs() {
+        return outputs;
+    }
+
+    static int videoWidth() {
+        return videoW;
+    }
+
+    static int videoHeight() {
+        return videoH;
+    }
+
+    /** Asks the PC for its screens again (they come in an "outputs" message). */
+    static void requestOutputs() {
+        sendAll(Proto.obj("op", "list_outputs"));
+    }
+
+    /** Shows the PC's screen {@code name} here, its pointer driven by touch. */
+    static void userMirror(Context c, String name) {
+        Keeper.turnOn(c);
+        requestedAt = System.currentTimeMillis();
+        requestedMirror = name;
+        setStatus("Waiting for the PC…");
+        sendAll(Proto.obj("op", "monitor_request", "on", true, "mirror", name));
+    }
+
+    /** Typing on the phone's keyboard, for the PC. */
+    static void sendText(String text) {
+        if (!text.isEmpty()) sendAll(Proto.obj("op", "text", "text", text));
+    }
+
+    static void sendKey(String key) {
+        sendAll(Proto.obj("op", "key", "key", key));
+    }
+
     static boolean pcConnected() {
         return !controls.isEmpty();
     }
@@ -105,6 +147,7 @@ final class Monitor {
     /** The phone's button: asks the PC to start, or tells it to stop. */
     static void userToggle(Context c, boolean on) {
         Keeper.turnOn(c); // the PC cannot answer without it
+        requestedMirror = null;
         if (on) {
             requestedAt = System.currentTimeMillis();
             setStatus("Waiting for the PC…");
@@ -254,6 +297,9 @@ final class Monitor {
         controls.add(out);
         try {
             Proto.write(out, hello());
+            String mirror = requestedMirror;
+            // A mirror asked for while the PC was away: say which screen.
+            if (mirror != null && requestPending()) Proto.write(out, Proto.obj("op", "monitor_request", "on", true, "mirror", mirror));
             while (true) {
                 JSONObject m = Proto.read(in);
                 switch (m.optString("op")) {
@@ -266,14 +312,28 @@ final class Monitor {
                     case "ping":
                         Proto.write(out, Proto.obj("op", "pong"));
                         break;
+                    case "outputs":
+                        outputs = names(m.optJSONArray("outputs"));
+                        break;
                     default:
                         break;
                 }
             }
         } finally {
             controls.remove(out);
+            if (controls.isEmpty()) outputs = new String[0];
             if (active) setStatus("Reconnecting to the PC…");
         }
+    }
+
+    private static String[] names(JSONArray a) {
+        if (a == null) return new String[0];
+        String[] n = new String[a.length()];
+        for (int i = 0; i < n.length; i++) {
+            JSONObject o = a.optJSONObject(i);
+            n[i] = o == null ? "" : o.optString("name");
+        }
+        return n;
     }
 
     private static JSONObject hello() {
@@ -281,7 +341,7 @@ final class Monitor {
         WindowManager wm = app.getSystemService(WindowManager.class);
         wm.getDefaultDisplay().getRealMetrics(dm);
         return Proto.obj("op", "hello", "version", Apps.versionCode(app), "width", dm.widthPixels, "height", dm.heightPixels,
-                "density", dm.densityDpi, "avc", hasAvcDecoder(), "requested", requestPending());
+                "density", dm.densityDpi, "avc", hasAvcDecoder(), "requested", requestPending() && requestedMirror == null);
     }
 
     private static boolean hasAvcDecoder() {
@@ -294,6 +354,12 @@ final class Monitor {
     /** Decodes until the PC closes the connection. The screen may come and go meanwhile. */
     private static void video(DataInputStream in, int w, int h) throws IOException {
         if (w <= 0 || h <= 0) throw new IOException("bad video size");
+        videoW = w;
+        videoH = h;
+        main.post(() -> {
+            MonitorActivity a = activity;
+            if (a != null) a.onVideoSize();
+        });
         setStatus("Connecting…");
         MediaCodec codec = null;
         Thread drain = null;
@@ -325,8 +391,9 @@ final class Monitor {
                         if (now == null) continue;
                     }
                     MediaFormat f = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, w, h);
-                    if (Keeper.isAtLeast(30)) f.setInteger(MediaFormat.KEY_LOW_LATENCY, 1);
                     codec = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_AVC);
+                    // Asking a decoder without it fails the whole setup (Schok Volt, Android 11).
+                    if (Keeper.isAtLeast(30) && lowLatency(codec)) f.setInteger(MediaFormat.KEY_LOW_LATENCY, 1);
                     codec.configure(f, now, null, 0);
                     codec.start();
                     current = now;
@@ -355,6 +422,15 @@ final class Monitor {
         } finally {
             closeCodec(codec, drain);
             if (active) setStatus("Reconnecting to the PC…");
+        }
+    }
+
+    private static boolean lowLatency(MediaCodec codec) {
+        try {
+            return codec.getCodecInfo().getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC)
+                    .isFeatureSupported(android.media.MediaCodecInfo.CodecCapabilities.FEATURE_LowLatency);
+        } catch (RuntimeException e) {
+            return false;
         }
     }
 

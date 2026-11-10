@@ -155,7 +155,7 @@ the pairing dialog's IP address &amp; port and code, and the port from the top o
         let direct_page = page_box();
         direct_page.append(&instructions(
             "For phones <b>without wireless debugging</b> (Android 10 and older) when no USB cable is at hand. \
-On the phone install <b>Wireless Debugging Keeper</b> (android-helper in this project), open it, switch on \
+On the phone install the <b>Test Bed</b> phone app (android-helper in this project), open it, switch on \
 <b>Allow PC connection without ADB</b> and tap <b>Pair with PC</b>. The phone appears below; type the code it shows.\n\
 Touch control needs the app turned on under the phone's <b>Settings › Accessibility</b>.",
         ));
@@ -418,7 +418,7 @@ Touch control needs the app turned on under the phone's <b>Settings › Accessib
         if phones.is_empty() {
             let row = adw::ActionRow::builder()
                 .title("Waiting for a phone…")
-                .subtitle("Phones appear here while Wireless Debugging Keeper allows the PC connection")
+                .subtitle("Phones appear here while the Test Bed phone app allows the PC connection")
                 .build();
             row.add_prefix(&gtk::Spinner::builder().spinning(true).build());
             self.direct_list.append(&row);

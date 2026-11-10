@@ -60,7 +60,24 @@ final class Dev {
         "permission_allow_all_button", "permission_allow_selected_button",
     };
 
+    /** Android's installer and Play Protect: the prompts of an install from the PC. */
+    private static final String[] INSTALLER_UI = {
+        "com.google.android.packageinstaller", "com.android.packageinstaller", "com.android.vending",
+    };
+    /** Android 9's installer screen, then the dialog of Android 10+. */
+    private static final String[] INSTALL_IDS = {
+        "com.google.android.packageinstaller:id/ok_button", "com.android.packageinstaller:id/ok_button", "android:id/button1",
+    };
+    /** Play Protect first ("Install anyway", "Don't send" for a scan), then the installer. */
+    private static final String[] INSTALL_TEXTS = {"Install anyway", "Install without scanning", "Don't send", "Install", "Update"};
+    /** Taps tried this long after an install from the PC needs confirming. */
+    private static final long INSTALL_CONFIRM_MS = 60_000;
+
     private static final ArrayDeque<JSONObject> events = new ArrayDeque<>();
+    /** Installs from the PC waiting to be confirmed; main thread only. */
+    private static int installsArmed;
+    private static long confirmUntil;
+    private static final Runnable CONFIRM = Dev::confirmInstall;
     private static long eventSeq;
     private static volatile boolean autoAllow;
     private static final Handler main = new Handler(Looper.getMainLooper());
@@ -283,6 +300,7 @@ final class Dev {
             boolean permission = isPermissionUi(pkg);
             type = permission ? "permission" : cls.contains("Dialog") || cls.contains("Popup") ? "dialog" : "window";
             if (permission && autoAllow) main.postDelayed(() -> allow(in), 400);
+            if (isInstallerUi(pkg)) main.postDelayed(CONFIRM, 400);
         } else {
             return;
         }
@@ -307,6 +325,83 @@ final class Dev {
     private static boolean isPermissionUi(String pkg) {
         for (String p : PERMISSION_UI) if (p.equals(pkg)) return true;
         return false;
+    }
+
+    private static boolean isInstallerUi(String pkg) {
+        for (String p : INSTALLER_UI) if (p.equals(pkg)) return true;
+        return false;
+    }
+
+    /**
+     * An install from the PC that may be confirmed for the user starts
+     * ({@code on}) or ends. While one runs, the installer's and Play Protect's
+     * buttons are tapped as they appear (needs touch control).
+     */
+    static void armInstall(boolean on) {
+        main.post(() -> {
+            installsArmed = Math.max(0, installsArmed + (on ? 1 : -1));
+            if (installsArmed == 0) confirmUntil = 0;
+        });
+    }
+
+    /** Android asked to confirm an armed install: look for its buttons for a while. */
+    static void confirmSoon() {
+        main.post(() -> {
+            if (installsArmed == 0) return;
+            confirmUntil = System.currentTimeMillis() + INSTALL_CONFIRM_MS;
+            main.postDelayed(CONFIRM, 500);
+        });
+    }
+
+    /** Taps Install (or Play Protect's way past its check) on screen; retries until it appears. */
+    private static void confirmInstall() {
+        main.removeCallbacks(CONFIRM);
+        if (installsArmed == 0 || System.currentTimeMillis() > confirmUntil) return;
+        InputService in = InputService.get();
+        if (in == null) return;
+        AccessibilityNodeInfo root = in.getRootInActiveWindow();
+        if (root != null && root.getPackageName() != null && isInstallerUi(root.getPackageName().toString())) {
+            AccessibilityNodeInfo b = installButton(root);
+            if (b != null && b.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+                CharSequence label = b.getText();
+                record(Proto.obj("type", "install_confirmed", "pkg", root.getPackageName().toString(), "cls", "",
+                        "text", label == null ? "" : label.toString()));
+                // Play Protect may ask next, or the installer after it.
+                main.postDelayed(CONFIRM, 1_000);
+                return;
+            }
+        }
+        main.postDelayed(CONFIRM, 700);
+    }
+
+    private static AccessibilityNodeInfo installButton(AccessibilityNodeInfo root) {
+        for (String text : INSTALL_TEXTS) {
+            List<AccessibilityNodeInfo> found = root.findAccessibilityNodeInfosByText(text);
+            if (found == null) continue;
+            for (AccessibilityNodeInfo n : found) {
+                CharSequence t = n.getText();
+                if (t == null || !t.toString().trim().equalsIgnoreCase(text)) continue;
+                AccessibilityNodeInfo b = clickable(n);
+                if (b != null) return b;
+            }
+        }
+        for (String id : INSTALL_IDS) {
+            List<AccessibilityNodeInfo> found = root.findAccessibilityNodeInfosByViewId(id);
+            if (found == null) continue;
+            for (AccessibilityNodeInfo n : found) {
+                AccessibilityNodeInfo b = clickable(n);
+                if (b != null) return b;
+            }
+        }
+        return null;
+    }
+
+    /** {@code n} or the nearest parent that can be tapped now. */
+    private static AccessibilityNodeInfo clickable(AccessibilityNodeInfo n) {
+        for (int depth = 0; n != null && depth < 3; depth++, n = n.getParent()) {
+            if (n.isClickable()) return n.isVisibleToUser() && n.isEnabled() ? n : null;
+        }
+        return null;
     }
 
     /** Taps the best "Allow" button on the permission prompt on screen. */

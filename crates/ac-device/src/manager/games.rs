@@ -177,7 +177,7 @@ impl Manager {
         Box::pin(async move {
             let Some((cmds, version)) = link else { return Err(game::no_game(port)) };
             if version < ac_direct::HELPER_V7 {
-                return Err("Update Wireless Debugging Keeper on this phone to 0.7 to reach games without ADB".into());
+                return Err("Update the Test Bed phone app on this phone to 0.7 to reach games without ADB".into());
             }
             let (tx, rx) = oneshot::channel();
             let req = json!({ "op": "game", "msg": msg, "timeout_ms": ms.min(GAME_TIMEOUT_LINK) });

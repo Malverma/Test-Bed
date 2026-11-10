@@ -75,7 +75,7 @@ async fn main() {
             let id = creds.keys.keys().next().unwrap().clone();
             let data = std::fs::read(&args[3]).unwrap();
             let install = args.get(4).is_some_and(|a| a == "install");
-            let req = PushRequest { name: "probe-push.bin".into(), dir: String::new(), size: data.len() as u64, job: 43, install, conflict: "overwrite".into() };
+            let req = PushRequest { name: "probe-push.bin".into(), dir: String::new(), size: data.len() as u64, job: 43, install, auto_confirm: false, conflict: "overwrite".into() };
             let (mut s, start) = open_push(addr, &creds, &id, &req).await.expect("push");
             let PushStart::From(off) = start else { panic!("skip") };
             println!("offset {off}");

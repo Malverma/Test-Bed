@@ -92,6 +92,10 @@ pub struct Discovery {
     pub builtin_mdns_fallback: bool,
     pub auto_connect_known: bool,
     pub legacy_port: u16,
+    /// Also switch wireless-debugging phones to `adb tcpip` on `legacy_port`:
+    /// that port stays the same when Wi-Fi drops, the wireless-debugging one
+    /// does not (until the phone reboots).
+    pub pin_wifi_port: bool,
     pub legacy_scan_subnet: bool,
     pub legacy_scan_concurrency: u32,
     pub legacy_scan_timeout_ms: u64,
@@ -104,6 +108,7 @@ impl Default for Discovery {
             builtin_mdns_fallback: true,
             auto_connect_known: true,
             legacy_port: 5555,
+            pin_wifi_port: true,
             legacy_scan_subnet: false,
             legacy_scan_concurrency: 32,
             legacy_scan_timeout_ms: 300,
@@ -297,6 +302,9 @@ pub struct Transfer {
     pub verify_checksum_threshold_mib: u32,
     pub trigger_media_scan: bool,
     pub recursive_directories: bool,
+    /// Installs skip the phone's prompts: Play Protect's scan of ADB installs
+    /// is switched off, and without ADB the helper taps Install itself.
+    pub skip_install_verification: bool,
 }
 
 impl Default for Transfer {
@@ -315,6 +323,7 @@ impl Default for Transfer {
             verify_checksum_threshold_mib: 64,
             trigger_media_scan: true,
             recursive_directories: true,
+            skip_install_verification: true,
         }
     }
 }

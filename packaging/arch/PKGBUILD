@@ -7,14 +7,17 @@ pkgdesc="Mirror, control and test apps on up to five Android phones over Wi-Fi (
 url='https://github.com/Malverma/Test-Bed'
 arch=('x86_64' 'aarch64')
 license=('Apache-2.0')
-depends=('gtk4' 'libadwaita' 'glib2' 'android-tools' 'scrcpy' 'avahi' 'dbus' 'ffmpeg' 'gcc-libs' 'glibc')
+depends=('gtk4' 'libadwaita' 'glib2' 'android-tools' 'scrcpy' 'avahi' 'dbus' 'ffmpeg' 'opus' 'gcc-libs' 'glibc')
 makedepends=('cargo' 'git')
 optdepends=('nss-mdns: resolve .local hostnames'
+            'polkit: one-click firewall setup for sharing this PC (PC tab)'
+            'libnotify: a notification when a computer connects to this PC'
+            'libpulse: send this PC'\''s audio to computers controlling it (parec)'
             'pipewire-audio: play the focused phone'\''s audio (pw-cat)'
             'intel-media-driver: hardware video and monitor mode encoding on Intel GPUs (Broadwell and newer)'
             'hyprland: use a phone as a monitor for this PC')
-replaces=('test-bed-multi' 'android-controller')
-conflicts=('test-bed-multi' 'android-controller')
+replaces=('test-bed-multi' 'android-controller' 'remotelinux-git')
+conflicts=('test-bed-multi' 'android-controller' 'remotelinux' 'remotelinux-git')
 install=test-bed.install
 options=('!lto' '!debug')  # debug remap flags break on paths with spaces
 source=("$pkgname::git+file://$(realpath "$startdir/../..")")
@@ -37,7 +40,7 @@ prepare() {
 
 build() {
   cd "$pkgname"
-  CARGO_TARGET_DIR=target cargo build --frozen --release --package test-bed --package ac-mcp
+  CARGO_TARGET_DIR=target cargo build --frozen --release --package test-bed --package ac-mcp --package ac-remote-host
 }
 
 check() {
@@ -50,6 +53,8 @@ package() {
   local appid=org.testbed.TestBed
   install -Dm755 target/release/test-bed "$pkgdir/usr/bin/test-bed"
   install -Dm755 target/release/test-bed-mcp "$pkgdir/usr/bin/test-bed-mcp"
+  install -Dm755 target/release/test-bed-share "$pkgdir/usr/bin/test-bed-share"
+  install -Dm644 data/70-test-bed-remote.rules "$pkgdir/usr/lib/udev/rules.d/70-test-bed-remote.rules"
   install -Dm644 "data/$appid.desktop" "$pkgdir/usr/share/applications/$appid.desktop"
   install -Dm644 android-helper/dist/wireless-debugging-keeper.apk \
     "$pkgdir/usr/share/$pkgname/wireless-debugging-keeper.apk"

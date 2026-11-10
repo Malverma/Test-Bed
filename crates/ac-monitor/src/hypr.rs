@@ -96,6 +96,16 @@ pub fn phone_mode(width: u32, height: u32, portrait: bool, max_side: u32) -> (u3
     if portrait { (short, long) } else { (long, short) }
 }
 
+/// A PC screen of `width`x`height` shrunk to fit inside `bound` (from
+/// [`phone_mode`]), keeping its shape. Both sides are multiples of 16, which
+/// some phones' decoders insist on (852 wide fails on Qualcomm).
+pub fn fit(width: u32, height: u32, bound: (u32, u32)) -> (u32, u32) {
+    let (w, h) = (f64::from(width.max(1)), f64::from(height.max(1)));
+    let scale = (f64::from(bound.0) / w).min(f64::from(bound.1) / h).min(1.0);
+    let align = |v: f64| ((v.floor() as u32) & !15).max(16);
+    (align(w * scale), align(h * scale))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -110,6 +120,15 @@ mod tests {
     #[test]
     fn builds_the_rule() {
         assert_eq!(monitor_rule("TBM-1", 1920, 864, 60, "auto-right", 1.5), "TBM-1,1920x864@60,auto-right,1.5");
+    }
+
+    #[test]
+    fn fits_a_screen() {
+        assert_eq!(fit(2560, 1440, (1920, 864)), (1536, 864));
+        assert_eq!(fit(1280, 720, (1920, 864)), (1280, 720));
+        assert_eq!(fit(1080, 1920, (864, 1920)), (864, 1536));
+        // 852x480 would come out of a 960x480 phone.
+        assert_eq!(fit(1920, 1080, (960, 480)), (848, 480));
     }
 
     #[test]

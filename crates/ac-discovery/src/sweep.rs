@@ -13,7 +13,7 @@ use tokio::net::TcpStream;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
-/// The Wireless Debugging Keeper's locator port (helper 0.8).
+/// The Test Bed phone app's locator port (helper 0.8).
 pub const LOCATOR_PORT: u16 = 27193;
 /// What the PC sends to the locator; it answers with one JSON line.
 pub const LOCATOR_REQUEST: &[u8] = b"TBL1\n";

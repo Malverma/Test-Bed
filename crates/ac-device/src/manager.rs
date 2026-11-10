@@ -39,10 +39,12 @@ const STAY_AWAKE_FILE: &str = "/data/local/tmp/android-controller-screen-timeout
 /// `Integer.MAX_VALUE` ms: the screen never times out.
 const STAY_AWAKE_TIMEOUT: u32 = i32::MAX as u32;
 
-/// Finishes setting up the Wireless Debugging Keeper helper (android-helper/)
+/// Finishes setting up the Test Bed phone app (android-helper/)
 /// on a phone that has it installed: the one permission it needs can only be
 /// granted over adb. Prints `@granted` when it did the setup now.
 const HELPER_PACKAGE: &str = "org.androidcontroller.keeper";
+/// A helper check that got no answer is tried again this much later.
+const HELPER_RECHECK_AFTER: Duration = Duration::from_secs(10);
 /// How long an update of the helper is watched for a signature failure.
 const HELPER_INSTALL_WAIT: Duration = Duration::from_secs(180);
 pub const HELPER_SETUP_CMD: &str = "rm -f /data/local/tmp/android-controller-server.jar /data/local/tmp/android-controller-probe.jar /data/local/tmp/android-controller-ui.xml \
@@ -64,7 +66,7 @@ const LEGACY_PROBE_EVERY: Duration = Duration::from_secs(30);
 
 /// Stale mDNS entries are kept this long so brief flaps don't flicker the UI.
 const NEARBY_GRACE: Duration = Duration::from_secs(30);
-/// The Wireless Debugging Keeper build this app ships (android-helper/dist):
+/// The Test Bed phone app build this app ships (android-helper/dist):
 /// phones with an older one are offered the update.
 const HELPER_APK: &[u8] = include_bytes!("../../../android-helper/dist/wireless-debugging-keeper.apk");
 
@@ -144,6 +146,10 @@ enum Msg {
     StayAwake { slot: SlotId, device_id: String, on: Option<bool> },
     /// A disconnected slot's `adb tcpip` (or helper) port accepts connections again.
     LegacyAlive { slot: SlotId, addr: String },
+    /// The helper check on `device_id` got no answer (adbd restarting, say): try again.
+    HelperRecheck { slot: SlotId, device_id: String },
+    /// `adb tcpip` is (being) switched on for `device_id`: also try `addr`.
+    PinnedPort { slot: SlotId, device_id: String, addr: String },
     /// A no-ADB pairing finished.
     DirectPaired { slot: SlotId, addr: SocketAddr, result: Result<ac_direct::Paired, String> },
     /// A no-ADB link attempt `conn` finished.
@@ -288,6 +294,8 @@ struct Manager {
     last_legacy_probe: Instant,
     /// Per slot: the helper check ran for the phone currently online.
     helper_checked: Vec<bool>,
+    /// Per slot: the fixed Wi-Fi port was checked while online.
+    port_checked: Vec<bool>,
     /// Keys of phones paired for the connection without ADB.
     keys: ac_direct::KeyStore,
     direct: Vec<Option<DirectLink>>,
@@ -402,6 +410,7 @@ impl Manager {
             stay_awake_busy: vec![false; n as usize],
             last_legacy_probe: Instant::now(),
             helper_checked: vec![false; n as usize],
+            port_checked: vec![false; n as usize],
             keys,
             direct: (0..n).map(|_| None).collect(),
             direct_pending: vec![0; n as usize],
@@ -550,7 +559,7 @@ impl Manager {
             stay_awake: self.stay_awake[i],
             helper_update: match (self.helper_old[i], &self.helper_apk, &s.phase) {
                 (Some(old), Some((_, new)), Phase::Online { .. }) => Some(format!(
-                    "Wireless Debugging Keeper {} is on this phone; {} is available{}",
+                    "The Test Bed phone app {} is on this phone; {} is available{}",
                     helper_version_name(old),
                     helper_version_name(*new),
                     if s.transport == TransportKind::Direct {
@@ -563,13 +572,13 @@ impl Manager {
             },
             warning: match (&self.direct[i], &s.phase) {
                 (Some(l), Phase::Online { .. }) if !l.hello.input => Some(
-                    "Touch control is off on the phone, so it only shows the screen. On the phone open Wireless Debugging Keeper, \
+                    "Touch control is off on the phone, so it only shows the screen. On the phone open the Test Bed app, \
 tap “Turn on touch control” and switch on “Test Bed touch control”."
                         .into(),
                 ),
                 (_, Phase::Online { .. }) if s.display_desired && s.transport == TransportKind::Legacy => Some(
-                    "This connection (adb tcpip) is not encrypted: anyone on this network could see this monitor's picture, \
-so touch control of the PC is off unless you turn it on. Wireless debugging is encrypted."
+                    "This connection (adb tcpip) is not encrypted: anyone on this network could see this monitor's picture. \
+Wireless debugging is encrypted."
                         .into(),
                 ),
                 _ => None,
@@ -598,6 +607,7 @@ so touch control of the PC is off unless you turn it on. Wireless debugging is e
             if !matches!(self.slots[i].phase, Phase::Online { .. }) {
                 self.stay_awake[i] = None;
                 self.helper_checked[i] = false;
+                self.port_checked[i] = false;
                 self.adaptive[i].reset();
                 self.codecs_checked[i] = false;
                 self.helper_old[i] = None;
@@ -609,6 +619,10 @@ so touch control of the PC is off unless you turn it on. Wireless debugging is e
             }
             if self.stay_awake[i].is_none() && !self.stay_awake_busy[i] {
                 self.run_stay_awake(i, None);
+            }
+            if !self.port_checked[i] {
+                self.port_checked[i] = true;
+                self.pin_wifi_port(i);
             }
             if !self.helper_checked[i] {
                 self.helper_checked[i] = true;
@@ -1089,6 +1103,34 @@ so touch control of the PC is off unless you turn it on. Wireless debugging is e
         }
     }
 
+    /// Switches a wireless-debugging phone to `adb tcpip` as well. Android
+    /// picks a new wireless-debugging port whenever Wi-Fi drops, so every drop
+    /// meant waiting for mDNS; the tcpip port stays put until a reboot. adbd
+    /// restarts once for this, and the slot then reconnects on the fixed port.
+    fn pin_wifi_port(&self, i: usize) {
+        let s = &self.slots[i];
+        let port = self.cfg.discovery.legacy_port;
+        if !self.cfg.discovery.pin_wifi_port || s.transport != TransportKind::Tls {
+            return;
+        }
+        let (Some(serial), Some(d)) = (s.adb_serial.clone(), s.device.as_ref()) else { return };
+        let Some(ip) = s.addr.as_deref().and_then(|a| a.parse::<SocketAddr>().ok()).map(|a| a.ip()) else { return };
+        let addr = SocketAddr::new(ip, port).to_string();
+        let (adb, tx, slot, device_id, shell_v2) = (self.adb.clone(), self.tx.clone(), s.id, d.id.clone(), d.shell_v2());
+        tokio::spawn(async move {
+            let current = adb.shell(&serial, "getprop service.adb.tcp.port", shell_v2).await;
+            let on = matches!(&current, Ok(o) if o.stdout.trim() == port.to_string());
+            let _ = tx.send(Msg::PinnedPort { slot, device_id, addr: addr.clone() });
+            if on {
+                return;
+            }
+            tracing::info!(slot, "switching {serial} to the fixed Wi-Fi port {addr}");
+            if let Err(e) = adb.tcpip(&serial, port).await {
+                tracing::warn!(slot, "could not switch to the fixed Wi-Fi port: {e}");
+            }
+        });
+    }
+
     /// Grants the helper app its permission if the phone has it installed.
     fn setup_helper(&self, i: usize) {
         let s = &self.slots[i];
@@ -1104,6 +1146,15 @@ so touch control of the PC is off unless you turn it on. Wireless debugging is e
         let (adb, tx, slot, device_id) = (self.adb.clone(), self.tx.clone(), s.id, d.id.clone());
         self.spawn_msg(async move {
             let out = adb.shell(&serial, HELPER_SETUP_CMD, shell_v2).await;
+            let answered = out.as_ref().is_ok_and(|o| o.stdout.contains("@none") || o.stdout.contains("@versionCode="));
+            if !answered {
+                let tx = tx.clone();
+                let device_id = device_id.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(HELPER_RECHECK_AFTER).await;
+                    let _ = tx.send(Msg::HelperRecheck { slot, device_id });
+                });
+            }
             if let Ok(o) = &out
                 && let Some(v) = o.stdout.lines().find_map(|l| l.trim().strip_prefix("@versionCode=")?.parse().ok())
             {
@@ -1116,8 +1167,8 @@ so touch control of the PC is off unless you turn it on. Wireless debugging is e
             }
             match out {
                 Ok(out) if out.stdout.lines().any(|l| l.trim() == "@granted") => {
-                    tracing::info!("set up Wireless Debugging Keeper on {title}");
-                    Msg::Toast(None, format!("Wireless Debugging Keeper is set up on {title}: wireless debugging now stays on"))
+                    tracing::info!("set up the Test Bed phone app on {title}");
+                    Msg::Toast(None, format!("The Test Bed phone app is set up on {title}: wireless debugging now stays on"))
                 }
                 Ok(out) if out.stdout.contains("@none") || out.stdout.contains("@ready") => Msg::Prune,
                 Ok(out) => {
@@ -1203,12 +1254,12 @@ so touch control of the PC is off unless you turn it on. Wireless debugging is e
         if self.slots[i].transport == TransportKind::Direct {
             return self.toast(
                 None,
-                format!("{title} has Wireless Debugging Keeper signed with a different key. Uninstall it on the phone, install this version, then pair again."),
+                format!("{title} has the Test Bed phone app signed with a different key. Uninstall it on the phone, install this version, then pair again."),
             );
         }
         let Some((serial, shell_v2, _)) = self.adb_target(i) else { return };
         let answer = self.confirm(
-            format!("Reinstall Wireless Debugging Keeper on {title}?"),
+            format!("Reinstall the Test Bed phone app on {title}?"),
             "The copy on this phone was signed with a different key, so Android will not update it. Reinstalling removes it first, \
 which resets its settings and its pairing for connections without ADB. Permissions are granted again automatically."
                 .into(),
@@ -1641,7 +1692,7 @@ which resets its settings and its pairing for connections without ADB. Permissio
         }
         match &self.direct[i] {
             Some(l) if l.hello.version < ac_direct::HELPER_V6 => {
-                self.send(reply(false, "Update Wireless Debugging Keeper on this phone (0.6 or newer) for app actions".into()))
+                self.send(reply(false, "Update the Test Bed phone app on this phone (0.6 or newer) for app actions".into()))
             }
             Some(l) => {
                 let _ = l.cmds.send(LinkCmd::App { action, reply: None });
@@ -1893,7 +1944,7 @@ which resets its settings and its pairing for connections without ADB. Permissio
             UiCommand::Record { slots, on } => self.record(slots, on),
             UiCommand::SetPerf { on } => self.perf_on = on,
             UiCommand::UpdateHelper { slot } => self.update_helper(slot),
-            UiCommand::SetDisplay { slot, on } => self.request_display(slot, on, true),
+            UiCommand::SetDisplay { slot, on } => self.request_display_from_pc(slot, on),
             UiCommand::SetDisplayOptions { slot, view_only, portrait } => self.set_display_options(slot, view_only, portrait),
             UiCommand::Confirm { id, ok } => self.on_confirm(id, ok),
             UiCommand::FrameSaved { request, error } => self.on_frame_saved(request, error),
@@ -1955,7 +2006,7 @@ which resets its settings and its pairing for connections without ADB. Permissio
                 match result {
                     Ok(()) if self.slots[i].device_id() == Some(device_id.as_str()) => self.update_helper(slot),
                     Ok(()) => {}
-                    Err(e) => self.toast(None, format!("Could not remove the old Wireless Debugging Keeper: {e}")),
+                    Err(e) => self.toast(None, format!("Could not remove the old Test Bed phone app: {e}")),
                 }
             }
             Msg::Slot(slot, ev) => self.feed(slot, ev),
@@ -2029,6 +2080,22 @@ which resets its settings and its pairing for connections without ADB. Permissio
                     let expect = s.device_id().map(str::to_owned);
                     let transport = if s.transport == TransportKind::Direct { TransportKind::Direct } else { TransportKind::Legacy };
                     self.feed(slot, SlotEvent::Connect { addr, transport, expect_serial: expect, silent: true });
+                }
+            }
+            Msg::HelperRecheck { slot, device_id } => {
+                if let Some(i) = self.idx(slot)
+                    && self.slots[i].device_id() == Some(device_id.as_str())
+                    && matches!(self.slots[i].phase, Phase::Online { .. })
+                {
+                    self.helper_checked[i] = false;
+                    self.emit_changed();
+                }
+            }
+            Msg::PinnedPort { slot, device_id, addr } => {
+                let Some(i) = self.idx(slot) else { return };
+                let s = &mut self.slots[i];
+                if s.device_id() == Some(device_id.as_str()) && s.transport == TransportKind::Tls {
+                    s.legacy_addr = Some(addr);
                 }
             }
             Msg::AdaptiveTick => self.adaptive_tick(),

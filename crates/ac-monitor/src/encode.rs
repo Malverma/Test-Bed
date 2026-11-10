@@ -41,8 +41,12 @@ pub fn order(preference: &str) -> &'static [Kind] {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Params {
+    /// The encoded picture.
     pub width: u32,
     pub height: u32,
+    /// The captured picture, scaled to `width`x`height` when it differs.
+    pub src_width: u32,
+    pub src_height: u32,
     pub src_fmt: Pixel,
     pub fps: u32,
     pub bitrate_kbps: u32,
@@ -195,17 +199,18 @@ impl Encoder {
         }
         let enc = enc.open_with(opts).with_context(|| format!("opening {name}"))?;
         let frame = ff::frame::Video::new(sw_fmt, p.width, p.height);
-        let scaler = if sw_fmt == p.src_fmt {
+        let same_size = (p.src_width, p.src_height) == (p.width, p.height);
+        let scaler = if sw_fmt == p.src_fmt && same_size {
             None
         } else {
             Some(ff::software::scaling::Context::get(
                 p.src_fmt,
-                p.width,
-                p.height,
+                p.src_width,
+                p.src_height,
                 sw_fmt,
                 p.width,
                 p.height,
-                ff::software::scaling::Flags::FAST_BILINEAR,
+                if same_size { ff::software::scaling::Flags::FAST_BILINEAR } else { ff::software::scaling::Flags::BILINEAR },
             )?)
         };
         tracing::info!("encoder {name}: {}x{} @{} fps, {} kbit/s", p.width, p.height, p.fps, p.bitrate_kbps);
@@ -214,7 +219,7 @@ impl Encoder {
 
     /// Encodes one captured frame, `stride` bytes per row.
     pub fn encode(&mut self, data: &[u8], stride: usize, y_invert: bool, pts_us: i64, force_idr: bool) -> Result<Vec<Encoded>> {
-        let (w, h) = (self.params.width as usize, self.params.height as usize);
+        let (w, h) = (self.params.src_width as usize, self.params.src_height as usize);
         let row = w * 4;
         if stride < row || data.len() < stride * h {
             bail!("capture buffer smaller than expected");
@@ -303,7 +308,7 @@ mod tests {
     use super::*;
 
     fn params() -> Params {
-        Params { width: 640, height: 360, src_fmt: Pixel::BGRZ, fps: 60, bitrate_kbps: 4000, render_node: "/dev/dri/renderD128".into() }
+        Params { width: 640, height: 360, src_width: 640, src_height: 360, src_fmt: Pixel::BGRZ, fps: 60, bitrate_kbps: 4000, render_node: "/dev/dri/renderD128".into() }
     }
 
     fn annex_b_has(data: &[u8], nal_type: u8) -> bool {

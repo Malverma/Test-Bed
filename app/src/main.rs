@@ -5,6 +5,8 @@ mod mirror;
 mod pairing;
 mod preferences;
 mod qr;
+mod remote;
+mod remote_viewer;
 mod slot_card;
 mod testbar;
 mod texture;
@@ -24,6 +26,24 @@ fn main() -> glib::ExitCode {
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,zbus=warn".into()))
         .init();
+
+    // `--connect <fingerprint>`: open that paired PC in the PC tab (the
+    // running Test Bed does it, if there is one).
+    let mut args: Vec<String> = std::env::args().collect();
+    let connect = args.iter().position(|a| a == "--connect").and_then(|i| {
+        let fp = args.get(i + 1).cloned();
+        args.drain(i..(i + 2).min(args.len()));
+        fp
+    });
+    // Before anything else starts: a Test Bed already running takes it.
+    let app = adw::Application::builder().application_id(APP_ID).build();
+    if let Some(fp) = &connect
+        && app.register(None::<&gtk::gio::Cancellable>).is_ok()
+        && app.is_remote()
+    {
+        app.activate_action("remote-connect", Some(&fp.to_variant()));
+        return app.run_with_args(&args);
+    }
 
     let paths = ac_config::Paths::xdg();
     let (config, config_error) = match paths.as_ref().map(|p| ac_config::load_config(&p.config)) {
@@ -61,8 +81,8 @@ fn main() -> glib::ExitCode {
         ac_device::spawn(opts)
     };
 
-    let app = adw::Application::builder().application_id(APP_ID).build();
     let manager = Rc::new(RefCell::new(Some(manager)));
+    let connect = RefCell::new(connect);
     app.connect_activate(move |app| {
         if let Some(win) = app.active_window() {
             win.present();
@@ -71,9 +91,12 @@ fn main() -> glib::ExitCode {
         if let Some(m) = manager.borrow_mut().take() {
             let restore = window::Restore { state: state.clone(), path: state_path.clone(), config_path: config_path.clone() };
             window::build(app, m, &config, slots, config_error.clone(), restore);
+            if let Some(fp) = connect.borrow_mut().take() {
+                app.activate_action("remote-connect", Some(&fp.to_variant()));
+            }
         }
     });
-    let code = app.run();
+    let code = app.run_with_args(&args);
     runtime.shutdown_timeout(Duration::from_secs(1));
     code
 }

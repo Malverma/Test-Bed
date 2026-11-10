@@ -141,7 +141,7 @@ async fn push_resumes_from_the_phones_offset() {
     let (addr, _phone) = spawn_phone(Some("000000")).await;
     let paired = pair(addr, "pc1", "pc", "000000").await.unwrap();
     let c = creds("pc1", &paired);
-    let req = PushRequest { name: "a.txt".into(), dir: String::new(), size: 8, job: 1, install: false, conflict: "rename".into() };
+    let req = PushRequest { name: "a.txt".into(), dir: String::new(), size: 8, job: 1, install: false, auto_confirm: false, conflict: "rename".into() };
     let (mut s, start) = open_push(addr, &c, &paired.id, &req).await.unwrap();
     let PushStart::From(off) = start else { panic!("skip") };
     assert_eq!(off, 3);

@@ -30,6 +30,39 @@ New in 2.0 ([`spec2.md`](spec2.md)):
 
 Settings move from `test-bed-multi` or `android-controller` to `test-bed` automatically on first start.
 
+## PC tab: remote access to PCs on your network
+
+The PC tab is [RemoteLinux](https://github.com/Malverma/RemoteLinux), built in.
+Both PCs run Test Bed on the same local network.
+
+1. **On the PC to control:** turn on **Share this PC**. It then starts at every
+   login, even when Test Bed is closed (the `test-bed-share` user service). If
+   **Finish setup** shows, click **Allow** once; it lets the shared PC create a
+   virtual keyboard and mouse, and opens ufw to your home network (UDP 47800).
+   Then click **Show pairing code**.
+2. **On the other PC:** the shared PC appears under **Computers**. Click **Pair**
+   and type the code. (Or use **Pair by address**.)
+3. Click **Connect**. The remote screen fills the PC tab. Buttons 1–4 switch
+   between its monitors, and Fullscreen hides Test Bed's own bars.
+
+While the remote PC has the keyboard, every key goes to it, Super shortcuts
+included. Ctrl+Alt+Shift with **Q** releases (click the picture to take it back),
+**F** toggles fullscreen, **D** disconnects, **S** switches sides, and **1–9**
+switch monitors. The remote PC's sound is muted at first; the speaker button
+next to **Switch sides** plays it on this PC.
+
+**Switch sides** flips control: the PC you're viewing then controls this one.
+Test Bed shares this PC if it wasn't already, the two PCs trust each other over
+the connection that's already paired (no second code), and the other PC's
+sharing opens Test Bed there, connected back here. Both PCs need Test Bed for
+this; a PC running RemoteLinux can't switch.
+
+Test Bed replaces the standalone RemoteLinux. The first start brings over its
+pairings and identity (computers paired before stay paired) and switches its
+`rl-host` service off, with sharing moved to Test Bed's. The wire protocol is the
+same, so Test Bed can still connect to a PC running RemoteLinux.
+Settings: `~/.config/test-bed/remote/host.toml` and `client.toml`.
+
 Working (Milestones 1–2):
 
 - **Discovery & pairing**: Avahi browsing, QR / 6-digit code / manual `IP[:port]`
@@ -181,8 +214,9 @@ Not run yet: the 2-hour, 5-phone soak test from spec §9.
 ## Run
 
 ```sh
-sudo pacman -S --needed rust gtk4 libadwaita android-tools scrcpy avahi pipewire-audio
+sudo pacman -S --needed rust gtk4 libadwaita android-tools scrcpy avahi pipewire-audio opus
 sudo systemctl enable --now avahi-daemon.service
+cargo build --release -p ac-remote-host   # test-bed-share, for Share this PC
 cargo run --release -p test-bed
 ```
 
@@ -218,6 +252,8 @@ python3 game-addon/tools/fake_game.py   # a fake game add-on (with: adb reverse 
 | `crates/ac-direct` | PC side of the helper's no-ADB connection (pairing, stream, files)  |
 | `crates/ac-audio`  | Focus-view audio: raw PCM from scrcpy-server played via PipeWire    |
 | `crates/ac-mcp`    | `test-bed-mcp`: MCP server for Claude over the control socket |
+| `crates/ac-remote` | PC tab (from RemoteLinux): pairing, QUIC transport, trust, discovery, the viewer's connection |
+| `crates/ac-remote-host` | `test-bed-share`: shares this PC (capture, NVENC/x264, uinput, audio) |
 | `crates/adb-mock`  | Fake ADB server for integration tests                                |
 | `app`              | GTK4/libadwaita UI                                                   |
 
@@ -235,4 +271,4 @@ cd packaging/aur/test-bed-git && makepkg -si   # or: yay -S test-bed-git
 
 Both install the phone helper to
 `/usr/share/test-bed/wireless-debugging-keeper.apk`, and
-`test-bed-mcp`, as well.
+`test-bed-mcp` and `test-bed-share`, as well.

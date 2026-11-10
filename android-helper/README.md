@@ -46,7 +46,7 @@ Android 10 and older have no wireless debugging, and without a USB cable
 connection itself:
 
 1. Install the app from the link above and open it.
-2. Switch on **Allow PC connection without ADB** and allow storing files.
+2. Under **Without ADB**, switch on **Allow PC connection** and allow storing files.
 3. Tap **Turn on touch control** and enable *Test Bed touch
    control* under Accessibility (without it the PC can only watch).
 4. Tap **Pair with PC**. In Test Bed open **Add Device › No ADB**,

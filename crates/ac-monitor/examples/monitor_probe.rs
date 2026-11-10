@@ -57,7 +57,7 @@ fn throughput(encoder: &str) -> anyhow::Result<()> {
         let e = match &mut enc {
             Some(e) => e,
             None => enc.insert(Encoder::new(
-                Params { width: info.width, height: info.height, src_fmt: info.pixel(), fps: 60, bitrate_kbps: 8000, render_node: "/dev/dri/renderD128".into() },
+                Params { width: info.width, height: info.height, src_width: info.width, src_height: info.height, src_fmt: info.pixel(), fps: 60, bitrate_kbps: 8000, render_node: "/dev/dri/renderD128".into() },
                 encoder,
             )?),
         };
@@ -138,6 +138,7 @@ fn run() -> anyhow::Result<()> {
         min_bitrate_kbps: 2000,
         encoder,
         render_node: "/dev/dri/renderD128".into(),
+        size: None,
     };
     let started = Instant::now();
     let h = session::spawn(params, video, move |e| {

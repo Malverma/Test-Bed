@@ -346,24 +346,23 @@ async fn the_output_goes_after_the_grace_time_but_the_wish_stays() {
 }
 
 #[tokio::test]
-async fn an_unencrypted_connection_starts_view_only_until_touch_is_allowed() {
+async fn an_unencrypted_connection_has_touch_until_turned_off() {
     let host = Arc::new(FakeHost::default());
     let (_mock, h, mut phone) = ready(LEGACY_ADDR, 8, &host).await;
     let v = wait_view(&h, "ready", |v| v.display_blocked.is_none()).await;
-    assert!(v.display_view_only);
+    assert!(!v.display_view_only);
 
     h.commands.send(UiCommand::SetDisplay { slot: 1, on: true }).await.unwrap();
     let start_msg = phone.expect(|v| v["op"] == "start", "start").await;
-    assert_eq!(start_msg["view_only"], true);
+    assert_eq!(start_msg["view_only"], false);
     let v = wait_view(&h, "live", is_live).await;
     assert!(v.warning.as_deref().is_some_and(|w| w.contains("not encrypted")), "{:?}", v.warning);
-    assert!(!host.log().iter().any(|l| l.starts_with("pointer")), "no way to touch the PC");
-
-    // Saying yes applies at once, and the output is not touched.
-    h.commands.send(UiCommand::SetDisplayOptions { slot: 1, view_only: Some(false), portrait: None }).await.unwrap();
-    let start_msg = phone.expect(|v| v["op"] == "start", "a new start").await;
-    assert_eq!(start_msg["view_only"], false);
     wait_log(&host, "pointer TBM-1").await;
+
+    // Turning touch off applies at once, and the output is not touched.
+    h.commands.send(UiCommand::SetDisplayOptions { slot: 1, view_only: Some(true), portrait: None }).await.unwrap();
+    let start_msg = phone.expect(|v| v["op"] == "start", "a new start").await;
+    assert_eq!(start_msg["view_only"], true);
     assert!(!host.log().iter().any(|l| l.starts_with("remove TBM")));
 }
 

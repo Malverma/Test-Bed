@@ -57,16 +57,17 @@ final class Receiver {
         long size = req.optLong("size", -1);
         String job = req.optString("job").replaceAll("[^0-9a-fA-F]", "");
         boolean install = req.optBoolean("install");
+        boolean autoConfirm = req.optBoolean("auto_confirm");
         if (name == null || size < 0 || job.isEmpty()) {
             Proto.error(out, "bad file request");
             return;
         }
         if (install) {
-            installApk(ctx, name, size, job, in, out);
+            installApk(ctx, name, size, job, autoConfirm, in, out);
             return;
         }
         if (ctx.checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
-            Proto.error(out, "Allow Wireless Debugging Keeper to store files: open it on the phone and tap Allow");
+            Proto.error(out, "Allow the Test Bed app to store files: open it on the phone and tap Allow");
             return;
         }
         File dir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
@@ -138,8 +139,8 @@ final class Receiver {
         return Crypto.hex(md.digest());
     }
 
-    private static void installApk(Context ctx, String name, long size, String job, DataInputStream in,
-            DataOutputStream out) throws IOException {
+    private static void installApk(Context ctx, String name, long size, String job, boolean autoConfirm,
+            DataInputStream in, DataOutputStream out) throws IOException {
         if (Keeper.isAtLeast(26) && !ctx.getPackageManager().canRequestPackageInstalls()) {
             Intent i = new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:" + ctx.getPackageName()))
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
@@ -148,7 +149,7 @@ final class Receiver {
             } catch (RuntimeException ignored) {
                 // the user can find it in Settings
             }
-            Proto.error(out, "Allow Wireless Debugging Keeper to install apps on the phone (Install unknown apps), then send again");
+            Proto.error(out, "Allow the Test Bed app to install apps on the phone (Install unknown apps), then send again");
             return;
         }
         File dir = new File(ctx.getCacheDir(), "install");
@@ -161,7 +162,7 @@ final class Receiver {
         Proto.write(out, Proto.obj("ok", true, "offset", offset));
         receive(in, part, offset, size);
         try {
-            String result = install(ctx, part, name);
+            String result = install(ctx, part, name, autoConfirm);
             if (result == null) {
                 Proto.write(out, Proto.obj("ok", true, "installed", true));
             } else {
@@ -173,7 +174,7 @@ final class Receiver {
     }
 
     /** Runs Android's installer on {@code apk}; null on success, else why not. */
-    private static String install(Context ctx, File apk, String name) throws IOException {
+    private static String install(Context ctx, File apk, String name, boolean autoConfirm) throws IOException {
         PackageInstaller pi = ctx.getPackageManager().getPackageInstaller();
         PackageInstaller.SessionParams params = new PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL);
         int id = pi.createSession(params);
@@ -187,6 +188,7 @@ final class Receiver {
                 if (status == PackageInstaller.STATUS_PENDING_USER_ACTION) {
                     Intent confirm = intent.getParcelableExtra(Intent.EXTRA_INTENT);
                     if (confirm != null) confirm(c, confirm, name);
+                    if (autoConfirm) Dev.confirmSoon();
                     return;
                 }
                 if (status == PackageInstaller.STATUS_SUCCESS) {
@@ -201,6 +203,7 @@ final class Receiver {
             }
         };
         ctx.registerReceiver(r, new IntentFilter(ACTION_INSTALLED));
+        if (autoConfirm) Dev.armInstall(true);
         try (PackageInstaller.Session s = pi.openSession(id)) {
             try (OutputStream o = s.openWrite("base.apk", 0, apk.length()); InputStream i = new FileInputStream(apk)) {
                 byte[] buf = new byte[1 << 16];
@@ -217,6 +220,7 @@ final class Receiver {
             Thread.currentThread().interrupt();
             return "interrupted";
         } finally {
+            if (autoConfirm) Dev.armInstall(false);
             ctx.unregisterReceiver(r);
             NotificationManager nm = ctx.getSystemService(NotificationManager.class);
             if (nm != null) nm.cancel(id);
