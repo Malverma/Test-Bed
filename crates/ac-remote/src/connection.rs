@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
 use crate::identity::Identity;
+use crate::net::Conn;
 use crate::proto::{read_msg, write_msg, ClientMsg, HostMsg, MonitorInfo, Motion, StreamSettings};
 use crate::transport::{self, ALPN_SESSION};
 use crate::trust::{KnownHost, KnownHosts};
@@ -90,7 +91,7 @@ async fn run(
     quit: Arc<AtomicBool>,
     events: Arc<dyn Fn(NetEvent) + Send + Sync>,
 ) {
-    let endpoint = match transport::client_endpoint() {
+    let endpoint = match Dialer::new(&host).await {
         Ok(e) => e,
         Err(e) => return events(NetEvent::Fatal(format!("{e:#}"))),
     };
@@ -123,20 +124,47 @@ async fn run(
             tokio::select! {
                 _ = &mut sleep => break,
                 m = rx.recv() => match m {
-                    None | Some(Outgoing::Quit) => { endpoint.close(0u32.into(), b"bye"); return; }
+                    None | Some(Outgoing::Quit) => { endpoint.close().await; return; }
                     Some(Outgoing::Msg(ClientMsg::UpdateSettings(s))) => settings = s,
                     Some(_) => {}
                 }
             }
         }
     }
-    endpoint.close(0u32.into(), b"bye");
-    endpoint.wait_idle().await;
+    endpoint.close().await;
+}
+
+/// Where sessions are dialed from: quinn for a LAN host, iroh for one paired
+/// over the internet.
+enum Dialer {
+    Lan(quinn::Endpoint),
+    Internet(iroh::Endpoint),
+}
+
+impl Dialer {
+    async fn new(host: &KnownHost) -> Result<Self> {
+        if host.internet {
+            let relay = crate::config::ClientConfig::load().map(|c| c.relay).unwrap_or_default();
+            Ok(Dialer::Internet(crate::internet::client_endpoint(&relay).await?))
+        } else {
+            Ok(Dialer::Lan(transport::client_endpoint()?))
+        }
+    }
+
+    async fn close(&self) {
+        match self {
+            Dialer::Lan(e) => {
+                e.close(0u32.into(), b"bye");
+                e.wait_idle().await;
+            }
+            Dialer::Internet(e) => e.close().await,
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
 async fn session(
-    endpoint: &quinn::Endpoint,
+    endpoint: &Dialer,
     host: &KnownHost,
     settings: &mut StreamSettings,
     client_name: &str,
@@ -157,8 +185,8 @@ async fn session(
         Ok(e) => e,
         Err(e) => classify(&conn, e),
     };
-    if !matches!(ended, Ended::Retry(_)) || conn.close_reason().is_none() {
-        conn.close(0u32.into(), b"bye");
+    if !matches!(ended, Ended::Retry(_)) || !conn.is_closed() {
+        conn.close(0, b"bye");
     }
     if let Ended::Retry(reason) = &ended {
         events(NetEvent::Disconnected { reason: reason.clone() });
@@ -166,10 +194,9 @@ async fn session(
     (ended, true)
 }
 
-fn classify(conn: &quinn::Connection, e: anyhow::Error) -> Ended {
-    if let Some(quinn::ConnectionError::ApplicationClosed(c)) = conn.close_reason() {
-        let reason = String::from_utf8_lossy(&c.reason).into_owned();
-        let code = c.error_code.into_inner() as u32;
+fn classify(conn: &Conn, e: anyhow::Error) -> Ended {
+    if let Some(c) = conn.app_close() {
+        let (code, reason) = (c.code, c.reason);
         return match code {
             close::NOT_PAIRED => Ended::Fatal(format!("the host does not recognise this laptop ({reason}); pair again from Test Bed's PC tab")),
             close::VERSION => Ended::Fatal(format!("incompatible host version ({reason})")),
@@ -181,7 +208,12 @@ fn classify(conn: &quinn::Connection, e: anyhow::Error) -> Ended {
     Ended::Retry(format!("{e:#}"))
 }
 
-async fn connect(endpoint: &quinn::Endpoint, host: &KnownHost, identity: &Identity) -> Result<quinn::Connection> {
+async fn connect(endpoint: &Dialer, host: &KnownHost, identity: &Identity) -> Result<Conn> {
+    let endpoint = match endpoint {
+        Dialer::Lan(e) => e,
+        // The endpoint id is checked by iroh's handshake: no fingerprint to compare.
+        Dialer::Internet(e) => return crate::internet::connect(e, host, ALPN_SESSION).await,
+    };
     let addr = transport::resolve(&host.address)?;
     let cfg = transport::client_config(identity, ALPN_SESSION)?;
     let conn = tokio::time::timeout(Duration::from_secs(3), endpoint.connect_with(cfg, addr, "remotelinux")?)
@@ -198,11 +230,11 @@ async fn connect(endpoint: &quinn::Endpoint, host: &KnownHost, identity: &Identi
             crate::identity::short_fingerprint(&fp)
         );
     }
-    Ok(conn)
+    Ok(conn.into())
 }
 
 async fn run_session(
-    conn: &quinn::Connection,
+    conn: &Conn,
     settings: &mut StreamSettings,
     client_name: &str,
     rx: &mut mpsc::UnboundedReceiver<Outgoing>,
@@ -216,8 +248,9 @@ async fn run_session(
         Some(HostMsg::Error { text }) => return Ok(Ended::Fatal(text)),
         other => bail!("unexpected reply {other:?}"),
     }
-    if let Ok(mut kh) = KnownHosts::load() {
-        if let Ok(fp) = transport::peer_fingerprint(conn) {
+    let known = if matches!(conn, Conn::Internet(_)) { KnownHosts::load_internet() } else { KnownHosts::load() };
+    if let Ok(mut kh) = known {
+        if let Ok(fp) = conn.peer_key() {
             kh.touch(&fp);
             let _ = kh.save();
         }
@@ -314,7 +347,7 @@ async fn run_session(
                     m = rx.recv() => match m {
                         None | Some(Outgoing::Quit) => {
                             let _ = write_msg(&mut send, &ClientMsg::Bye).await;
-                            let _ = send.finish();
+                            send.finish();
                             let _ = tokio::time::timeout(Duration::from_millis(300), send.stopped()).await;
                             return anyhow::Ok(Ended::Quit);
                         }

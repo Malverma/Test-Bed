@@ -16,7 +16,7 @@ pub struct HostConfig {
     pub resolution: String,
     pub fps: u32,
     pub bitrate_kbps: u32,
-    /// "auto", "nvenc" or "x264".
+    /// "auto", "nvenc", "qsv", "mf" (Windows) or "x264".
     pub encoder: String,
     pub show_cursor_in_stream: bool,
     pub notify_on_connect: bool,
@@ -24,6 +24,10 @@ pub struct HostConfig {
     pub audio: bool,
     /// Device name presented to clients. Empty = hostname.
     pub name: String,
+    /// Accept PCs paired over the internet (spec3).
+    pub internet: bool,
+    /// Relay server for internet connections. Empty = n0's public relays.
+    pub relay: String,
 }
 
 impl Default for HostConfig {
@@ -39,6 +43,8 @@ impl Default for HostConfig {
             notify_on_connect: true,
             audio: true,
             name: String::new(),
+            internet: false,
+            relay: String::new(),
         }
     }
 }
@@ -62,6 +68,8 @@ pub struct ClientConfig {
     pub show_stats: bool,
     /// Device name presented to hosts. Empty = hostname.
     pub name: String,
+    /// Relay server for internet connections. Empty = n0's public relays.
+    pub relay: String,
 }
 
 impl Default for ClientConfig {
@@ -77,6 +85,7 @@ impl Default for ClientConfig {
             monitor: String::new(),
             show_stats: false,
             name: String::new(),
+            relay: String::new(),
         }
     }
 }

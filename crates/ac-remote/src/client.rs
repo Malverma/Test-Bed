@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use anyhow::{anyhow, bail, Context, Result};
 
 use crate::identity::{Identity, Role};
+use crate::net::Conn;
 use crate::transport::{self, ALPN_PAIR, ALPN_PROBE};
 use crate::trust::{KnownHost, KnownHosts};
 
@@ -25,8 +26,9 @@ pub async fn pair(address: &str, pin: &str, name: &str) -> Result<KnownHost> {
         .await
         .map_err(|_| anyhow!("{address} did not respond; is sharing on there and UDP port {} open?", addr.port()))?
         .with_context(|| format!("connecting to {addr}"))?;
+    let conn = Conn::from(conn);
     let res = crate::pairing::pair_as_client(&conn, &identity.fingerprint, name, &pin).await;
-    conn.close(0u32.into(), b"");
+    conn.close(0, b"");
     ep.wait_idle().await;
     let paired = res?;
     // Keep the address as typed (a hostname survives DHCP changes), with an explicit port.
@@ -34,7 +36,7 @@ pub async fn pair(address: &str, pin: &str, name: &str) -> Result<KnownHost> {
         || matches!(address.rsplit_once(':'), Some((h, p)) if !h.contains(':') && p.parse::<u16>().is_ok());
     let address = if has_port { address.to_string() } else { format!("{address}:{}", addr.port()) };
     let now = crate::unix_now();
-    let host = KnownHost { name: paired.peer_name, address, fingerprint: paired.peer_fingerprint, paired_at: now, last_seen: Some(now) };
+    let host = KnownHost { name: paired.peer_name, address, fingerprint: paired.peer_fingerprint, paired_at: now, last_seen: Some(now), internet: false };
     let mut kh = KnownHosts::load()?;
     kh.upsert(host.clone());
     kh.save()?;

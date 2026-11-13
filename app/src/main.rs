@@ -1,19 +1,37 @@
+// Windows builds the PC tab only, in its own window, without a console.
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
+#[cfg(unix)]
 mod broadcast;
+#[cfg(unix)]
 mod dnd;
+#[cfg(unix)]
 mod grid_layout;
+#[cfg(unix)]
 mod mirror;
+#[cfg(unix)]
 mod pairing;
+#[cfg(windows)]
+mod pc_window;
+#[cfg(unix)]
 mod preferences;
+#[cfg(unix)]
 mod qr;
 mod remote;
 mod remote_viewer;
+#[cfg(unix)]
 mod slot_card;
+#[cfg(unix)]
 mod testbar;
 mod texture;
+#[cfg(unix)]
 mod window;
 
+#[cfg(unix)]
 use std::cell::RefCell;
+#[cfg(unix)]
 use std::rc::Rc;
+#[cfg(unix)]
 use std::time::Duration;
 
 use adw::prelude::*;
@@ -22,13 +40,14 @@ use tracing_subscriber::EnvFilter;
 
 const APP_ID: &str = "org.testbed.TestBed";
 
-fn main() -> glib::ExitCode {
+/// Logging, the command line and the application. `--connect <fingerprint>`
+/// opens that paired PC in the PC tab; a Test Bed already running does it
+/// (then `Err` holds the exit code).
+fn start() -> Result<(adw::Application, Vec<String>, Option<String>), glib::ExitCode> {
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,zbus=warn".into()))
         .init();
 
-    // `--connect <fingerprint>`: open that paired PC in the PC tab (the
-    // running Test Bed does it, if there is one).
     let mut args: Vec<String> = std::env::args().collect();
     let connect = args.iter().position(|a| a == "--connect").and_then(|i| {
         let fp = args.get(i + 1).cloned();
@@ -42,8 +61,39 @@ fn main() -> glib::ExitCode {
         && app.is_remote()
     {
         app.activate_action("remote-connect", Some(&fp.to_variant()));
-        return app.run_with_args(&args);
+        return Err(app.run_with_args(&args));
     }
+    Ok((app, args, connect))
+}
+
+#[cfg(windows)]
+fn main() -> glib::ExitCode {
+    let (app, args, connect) = match start() {
+        Ok(started) => started,
+        Err(code) => return code,
+    };
+    // No VA-API on Windows: FFmpeg decodes in software.
+    let media = std::sync::Arc::new(ac_media::MediaContext::new("software", "auto"));
+    let connect = std::cell::RefCell::new(connect);
+    app.connect_activate(move |app| {
+        if let Some(win) = app.active_window() {
+            win.present();
+            return;
+        }
+        pc_window::build(app, media.clone());
+        if let Some(fp) = connect.borrow_mut().take() {
+            app.activate_action("remote-connect", Some(&fp.to_variant()));
+        }
+    });
+    app.run_with_args(&args)
+}
+
+#[cfg(unix)]
+fn main() -> glib::ExitCode {
+    let (app, args, connect) = match start() {
+        Ok(started) => started,
+        Err(code) => return code,
+    };
 
     let paths = ac_config::Paths::xdg();
     let (config, config_error) = match paths.as_ref().map(|p| ac_config::load_config(&p.config)) {

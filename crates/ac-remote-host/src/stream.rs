@@ -69,8 +69,19 @@ fn run(cfg: &HostConfig, mut settings: StreamSettings, ctrl: &StreamControl, tx:
     let mut cap = Capturer::connect()?;
     cap.continuous = continuous;
     let mut failures = 0u32;
+    // Set once the only working encoder is x264: from then on the stream is
+    // capped to 720p at 30 fps, so the processor doesn't run hot.
+    let mut on_cpu = false;
+    let effective = |s: &StreamSettings, on_cpu: bool| {
+        let mut eff = effective(cfg, s);
+        if on_cpu {
+            eff.max_height = Some(eff.max_height.map_or(encoder::CPU_MAX_HEIGHT, |h| h.min(encoder::CPU_MAX_HEIGHT)));
+            eff.fps = eff.fps.min(encoder::CPU_MAX_FPS);
+        }
+        eff
+    };
     'outer: loop {
-        let eff = effective(cfg, &settings);
+        let eff = effective(&settings, on_cpu);
         let mons = monitors::list()?;
         let Some(mon) = monitors::select(&mons, eff.monitor.as_deref()) else { bail!("no monitors found") };
         if eff.monitor.as_deref().is_some_and(|w| w != "auto" && !w.is_empty() && w != mon.info.name) {
@@ -96,7 +107,7 @@ fn run(cfg: &HostConfig, mut settings: StreamSettings, ctrl: &StreamControl, tx:
                 return Ok(());
             }
             if let Some(s) = ctrl.settings.lock().unwrap().take() {
-                if effective(cfg, &s) != eff {
+                if effective(&s, on_cpu) != eff {
                     settings = s;
                     continue 'outer;
                 }
@@ -155,7 +166,15 @@ fn run(cfg: &HostConfig, mut settings: StreamSettings, ctrl: &StreamControl, tx:
             };
             let mut fresh = false;
             if enc.as_ref().map(|e| &e.params) != Some(&params) {
-                enc = Some(Encoder::new(params, &cfg.encoder)?);
+                let e = Encoder::new(params, &cfg.encoder)?;
+                if e.kind.on_cpu() && !on_cpu {
+                    on_cpu = true;
+                    if effective(&settings, true) != eff {
+                        tracing::info!("encoding on the processor: capping the stream at {}p, {} fps", encoder::CPU_MAX_HEIGHT, encoder::CPU_MAX_FPS);
+                        continue 'outer;
+                    }
+                }
+                enc = Some(e);
                 fresh = true;
                 let _ = tx.send(StreamEvent::Info { monitor: name.clone(), width: ow, height: oh, fps: eff.fps, target });
             }

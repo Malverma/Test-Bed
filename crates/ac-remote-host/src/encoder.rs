@@ -1,5 +1,6 @@
-//! H.264 encoding with FFmpeg: NVENC when available, x264 as a fallback.
-//! Every setting favours latency over quality.
+//! H.264 encoding with FFmpeg: the graphics card's encoder when there is one
+//! (NVENC; on Windows also Intel Quick Sync and Media Foundation), x264 on
+//! the processor as a fallback. Every setting favours latency over quality.
 
 use anyhow::{anyhow, bail, Context, Result};
 use ffmpeg_next as ff;
@@ -8,8 +9,23 @@ use ff::format::Pixel;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     Nvenc,
+    /// Intel Quick Sync.
+    Qsv,
+    /// Windows' Media Foundation encoder, hardware only (Intel, AMD, NVIDIA).
+    Mf,
     X264,
 }
+
+impl Kind {
+    /// Encodes on the processor: the stream is capped to keep the PC cool.
+    pub fn on_cpu(self) -> bool {
+        self == Kind::X264
+    }
+}
+
+/// The cap for processor encoding.
+pub const CPU_MAX_HEIGHT: u32 = 720;
+pub const CPU_MAX_FPS: u32 = 30;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Params {
@@ -51,11 +67,15 @@ pub fn init() {
 }
 
 impl Encoder {
-    /// `preference`: "auto", "nvenc" or "x264".
+    /// `preference`: "auto", "nvenc", "qsv", "mf" or "x264".
     pub fn new(params: Params, preference: &str) -> Result<Self> {
         let order: &[Kind] = match preference {
             "nvenc" => &[Kind::Nvenc],
+            "qsv" => &[Kind::Qsv],
+            "mf" => &[Kind::Mf],
             "x264" => &[Kind::X264],
+            // Linux keeps its tested order; Quick Sync there goes through VA-API's drivers.
+            _ if cfg!(windows) => &[Kind::Nvenc, Kind::Qsv, Kind::Mf, Kind::X264],
             _ => &[Kind::Nvenc, Kind::X264],
         };
         let mut last = None;
@@ -74,6 +94,8 @@ impl Encoder {
     fn open(p: Params, kind: Kind) -> Result<Self> {
         let name = match kind {
             Kind::Nvenc => "h264_nvenc",
+            Kind::Qsv => "h264_qsv",
+            Kind::Mf => "h264_mf",
             Kind::X264 => "libx264",
         };
         let codec = ff::encoder::find_by_name(name).ok_or_else(|| anyhow!("FFmpeg has no {name}"))?;
@@ -81,7 +103,7 @@ impl Encoder {
         // NVENC converts packed RGB on the GPU, so unscaled frames skip the CPU.
         let enc_fmt = match kind {
             Kind::Nvenc if !scaled => p.src_fmt,
-            Kind::Nvenc => Pixel::NV12,
+            Kind::Nvenc | Kind::Qsv | Kind::Mf => Pixel::NV12,
             Kind::X264 => Pixel::YUV420P,
         };
         let mut enc = ff::codec::context::Context::new_with_codec(codec).encoder().video()?;
@@ -121,6 +143,18 @@ impl Encoder {
                 opts.set("profile", "high");
                 // Multiple slices let the decoder use slice threads.
                 opts.set("slices", "4");
+            }
+            Kind::Qsv => {
+                opts.set("preset", "veryfast");
+                opts.set("async_depth", "1");
+                opts.set("look_ahead", "0");
+                opts.set("forced_idr", "1");
+                opts.set("low_delay_brc", "1");
+            }
+            Kind::Mf => {
+                opts.set("hw_encoding", "1");
+                opts.set("rate_control", "cbr");
+                opts.set("scenario", "display_remoting");
             }
             Kind::X264 => {
                 opts.set("preset", "ultrafast");

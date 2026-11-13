@@ -1,0 +1,96 @@
+# Test Bed for Windows 11: the PC tab (control other PCs, share this one)
+# built with MSYS2's CLANG64 toolchain, zipped with the GTK runtime it needs.
+# A `v*` tag attaches the zip to that release; any run keeps it as an artifact.
+name: Windows
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      CARGO_HOME: ${{ github.workspace }}\.cargo-home
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANG64
+          update: true
+          install: >-
+            zip
+          pacboy: >-
+            rust:p
+            clang:p
+            pkgconf:p
+            cmake:p
+            gtk4:p
+            libadwaita:p
+            adwaita-icon-theme:p
+            ffmpeg:p
+            opus:p
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            .cargo-home/registry
+            target
+          key: windows-clang64-${{ hashFiles('Cargo.lock') }}
+
+      - name: Build
+        run: cargo build --release --locked -p test-bed -p ac-remote-host
+
+      - name: Test
+        run: cargo test --release --locked -p ac-remote -p ac-remote-host -p ac-input
+
+      - name: Bundle
+        run: |
+          set -euo pipefail
+          out=dist/TestBed
+          mkdir -p "$out/bin" "$out/lib" "$out/share/glib-2.0" "$out/share/icons"
+          cp target/release/test-bed.exe target/release/test-bed-share.exe "$out/bin/"
+          # gdk-pixbuf's loaders are loaded at run time; ldd can't see them.
+          cp -r /clang64/lib/gdk-pixbuf-2.0 "$out/lib/"
+          # Every DLL the programs and loaders load, from MSYS2 only.
+          for f in "$out"/bin/*.exe "$out"/lib/gdk-pixbuf-2.0/2.10.0/loaders/*.dll; do
+            ldd "$f" | awk '/\/clang64\/bin\// { print $3 }'
+          done | sort -u | xargs -I{} cp -n {} "$out/bin/"
+          cp -r /clang64/share/glib-2.0/schemas "$out/share/glib-2.0/"
+          glib-compile-schemas "$out/share/glib-2.0/schemas"
+          cp -r /clang64/share/icons/Adwaita /clang64/share/icons/hicolor "$out/share/icons/"
+          gtk4-update-icon-cache -q -f "$out/share/icons/Adwaita" || true
+          cat > "$out/README.txt" <<'EOF'
+          Test Bed for Windows
+
+          Run bin\test-bed.exe. Keep the folder together: the programs need
+          the files beside them.
+
+          To share this PC, open Test Bed and turn on "Share this PC". To
+          reach it from another network, also turn on "Allow access from
+          other networks" and send the invite code to the other computer.
+          EOF
+          version="${GITHUB_REF_NAME#v}"
+          [ "$GITHUB_REF_TYPE" = tag ] || version="$(git rev-parse --short HEAD)"
+          (cd dist && zip -qr "../TestBed-windows-x64-$version.zip" TestBed)
+          echo "ZIP=TestBed-windows-x64-$version.zip" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TestBed-windows-x64
+          path: ${{ env.ZIP }}
+
+      - name: Attach to release
+        if: github.ref_type == 'tag'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" "$ZIP" --clobber || gh release create "$GITHUB_REF_NAME" "$ZIP" --title "$GITHUB_REF_NAME" --notes "Windows build"

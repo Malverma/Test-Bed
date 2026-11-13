@@ -12,7 +12,7 @@ async fn run(host_pin: Option<&str>, client_pin: &str) -> (anyhow::Result<ac_rem
     let host_task = tokio::spawn(async move {
         let conn = server.accept().await.unwrap().await.unwrap();
         assert_eq!(transport::alpn(&conn).as_deref(), Some(ALPN_PAIR));
-        pair_as_host(&conn, &host_fp, "desk", host_pin.as_deref()).await.unwrap()
+        pair_as_host(&conn.into(), &host_fp, "desk", host_pin.as_deref()).await.unwrap()
     });
     let client = transport::client_endpoint().unwrap();
     let conn = client
@@ -20,7 +20,7 @@ async fn run(host_pin: Option<&str>, client_pin: &str) -> (anyhow::Result<ac_rem
         .unwrap()
         .await
         .unwrap();
-    let res = pair_as_client(&conn, &client_id.fingerprint, "laptop", client_pin).await;
+    let res = pair_as_client(&conn.into(), &client_id.fingerprint, "laptop", client_pin).await;
     let host_res = host_task.await.unwrap();
     (res, host_res, host_id.fingerprint, client_id.fingerprint)
 }

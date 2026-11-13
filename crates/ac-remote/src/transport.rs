@@ -92,6 +92,10 @@ pub fn bind_socket(addr: SocketAddr) -> Result<std::net::UdpSocket> {
     Ok(sock)
 }
 
+#[cfg(windows)]
+fn set_low_latency(_sock: &std::net::UdpSocket) {}
+
+#[cfg(unix)]
 fn set_low_latency(sock: &std::net::UdpSocket) {
     use std::os::fd::AsRawFd;
     // DSCP EF (46) << 2 = 0xb8, and SO_PRIORITY 6 for local qdisc / Wi-Fi WMM voice/video queues.
@@ -104,6 +108,7 @@ fn set_low_latency(sock: &std::net::UdpSocket) {
     }
 }
 
+#[cfg(unix)]
 unsafe fn libc_setsockopt(fd: i32, level: i32, name: i32, val: &i32) {
     extern "C" {
         fn setsockopt(fd: i32, level: i32, name: i32, val: *const core::ffi::c_void, len: u32) -> i32;

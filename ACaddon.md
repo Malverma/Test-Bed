@@ -18,7 +18,7 @@ The reference implementations are in the Test Bed repository, under `game-addon/
 | Anything else | implement §4 (an hour of work in most engines) | — |
 | Test double | `game-addon/tools/fake_game.py` | a fake game for checking the PC side |
 
-On the PC this was built on, the repository is at `~/Projects/TestBed`. Upstream: https://github.com/Malverma/Test-Bed.
+On the PC this was built on, the repository is at `~/Projects/TestBed`. Upstream: https://github.com/PocketStudiosLLC/Test-Bed.
 
 ---
 

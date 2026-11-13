@@ -14,6 +14,7 @@ async fn main() -> anyhow::Result<()> {
     let id = Identity::load_or_create(Role::Client)?;
     let ep = transport::client_endpoint()?;
     let conn = ep.connect_with(transport::client_config(&id, transport::ALPN_SESSION)?, addr, "remotelinux")?.await?;
+    let conn = ac_remote::net::Conn::from(conn);
     let (mut s, mut r) = conn.open_bi().await?;
     let settings = StreamSettings { monitor: Some(args[2].clone()), ..Default::default() };
     write_msg(&mut s, &ClientMsg::Hello { version: ac_remote::PROTOCOL_VERSION, client_name: "probe".into(), settings }).await?;
@@ -41,7 +42,7 @@ async fn main() -> anyhow::Result<()> {
     write_msg(&mut s, &ClientMsg::Key { code: 54, pressed: true }).await?; // KEY_RIGHTSHIFT
     write_msg(&mut s, &ClientMsg::Key { code: 54, pressed: false }).await?;
     write_msg(&mut s, &ClientMsg::Bye).await?;
-    let _ = s.finish();
+    s.finish();
     tokio::time::sleep(Duration::from_millis(200)).await;
     println!("ok");
     Ok(())

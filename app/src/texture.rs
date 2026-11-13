@@ -7,9 +7,11 @@ use gtk::glib::{self, translate::FromGlib};
 /// Builds a texture for `frame`. Memory frames always succeed; a dma-buf
 /// import can fail (unsupported modifier), in which case the error is
 /// returned and the caller switches the decoder to `vaapi-copy`.
+#[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
 pub fn build(display: &gdk::Display, frame: Frame) -> Result<gdk::Texture, glib::Error> {
     let color = color_state(&frame.color);
     let (w, h) = (frame.width, frame.height);
+    #[cfg(target_os = "linux")]
     if let FrameData::Dmabuf(d) = &frame.data {
         let mut b = gdk::DmabufTextureBuilder::new()
             .set_display(display)
@@ -28,7 +30,10 @@ pub fn build(display: &gdk::Display, frame: Frame) -> Result<gdk::Texture, glib:
         // SAFETY: see above.
         return unsafe { b.build_with_release_func(move || drop(frame)) };
     }
-    let FrameData::Memory(m) = frame.data else { unreachable!("handled above") };
+    let FrameData::Memory(m) = frame.data else {
+        // dma-bufs come from VA-API, which only exists on Linux.
+        return Err(glib::Error::new(glib::FileError::Inval, "dma-buf frames need Linux"));
+    };
     {
         {
             // SAFETY: GDK_MEMORY_G8_B8R8_420 (NV12) and G8_B8_R8_420 (I420)

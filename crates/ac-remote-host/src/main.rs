@@ -1,9 +1,12 @@
+// On Windows the service runs at sign-in with no console window; the CLI
+// commands attach to the console they were started from.
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 use std::sync::Arc;
 
 use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
 use ac_remote::config::HostConfig;
-use ac_remote::trust::AuthorizedClients;
 use ac_remote_host::{control, server::Host};
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -40,15 +43,47 @@ enum Cmd {
     Monitors,
 }
 
-fn init_logging() {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::try_from_env("RL_LOG").unwrap_or_else(|_| "info,quinn=warn".into()))
-        .with_writer(std::io::stderr)
-        .init();
+/// Logs go to stderr, or on Windows, for the background service, to
+/// `share.log` (it has no console and no journal).
+fn init_logging(to_file: bool) {
+    let filter = tracing_subscriber::EnvFilter::try_from_env("RL_LOG").unwrap_or_else(|_| "info,quinn=warn,iroh=warn,noq=warn".into());
+    let log = ac_remote::paths::share_log();
+    let file = to_file
+        .then(|| {
+            std::fs::create_dir_all(log.parent()?).ok()?;
+            // Start over past 1 MB rather than grow forever.
+            let big = std::fs::metadata(&log).is_ok_and(|m| m.len() > 1 << 20);
+            std::fs::OpenOptions::new().create(true).append(!big).write(true).truncate(big).open(&log).ok()
+        })
+        .flatten();
+    match file {
+        Some(f) => tracing_subscriber::fmt().with_env_filter(filter).with_ansi(false).with_writer(std::sync::Mutex::new(f)).init(),
+        None => tracing_subscriber::fmt().with_env_filter(filter).with_writer(std::io::stderr).init(),
+    }
+}
+
+/// Windows: physical pixels everywhere (capture, monitor layout and
+/// `SendInput` agree only then), and a console for the CLI commands.
+#[cfg(windows)]
+fn platform_init(background: bool) {
+    use windows::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
+    use windows::Win32::UI::HiDpi::{SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
+    unsafe {
+        let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        if !background {
+            let _ = AttachConsole(ATTACH_PARENT_PROCESS);
+        }
+    }
+}
+
+#[cfg(unix)]
+fn platform_init(_background: bool) {
+    fix_env();
 }
 
 /// When started from systemd the session environment may be missing; find the
 /// Wayland socket and Hyprland instance in the runtime dir.
+#[cfg(unix)]
 fn fix_env() {
     let Some(rt) = std::env::var_os("XDG_RUNTIME_DIR").map(std::path::PathBuf::from) else { return };
     if std::env::var_os("WAYLAND_DISPLAY").is_none() {
@@ -84,8 +119,9 @@ fn print(json_mode: bool, v: &Value, human: impl FnOnce(&Value)) {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    init_logging();
-    fix_env();
+    let background = matches!(cli.cmd, None | Some(Cmd::Run { .. }));
+    platform_init(background);
+    init_logging(cfg!(windows) && background);
     match cli.cmd.unwrap_or(Cmd::Run { listen: None }) {
         Cmd::Run { listen } => run(listen).await,
         Cmd::Pair => pair(cli.json).await,
@@ -103,11 +139,7 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Cmd::Unpair { name } => {
-            let mut a = AuthorizedClients::load()?;
-            let removed = a.remove(&name);
-            if removed {
-                a.save()?;
-            }
+            let removed = control::unpair(&name)?;
             print(cli.json, &json!({ "removed": removed, "name": name }), |_| {
                 println!("{}", if removed { format!("Removed {name}.") } else { format!("No paired client named {name}.") })
             });
@@ -186,22 +218,30 @@ async fn run(listen: Option<String>) -> Result<()> {
             }
         });
     }
+    {
+        let h = host.clone();
+        tokio::spawn(async move { h.serve_internet().await });
+    }
     let h = host.clone();
     tokio::spawn(async move {
-        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).unwrap();
-        tokio::select! { _ = tokio::signal::ctrl_c() => {}, _ = term.recv() => {} }
+        #[cfg(unix)]
+        {
+            let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).unwrap();
+            tokio::select! { _ = tokio::signal::ctrl_c() => {}, _ = term.recv() => {} }
+        }
+        #[cfg(windows)]
+        let _ = tokio::signal::ctrl_c().await;
         tracing::info!("shutting down");
         h.shutdown();
     });
     host.serve().await?;
-    let _ = std::fs::remove_file(ac_remote::paths::host_control_socket());
+    ac_remote::ipc::cleanup();
     Ok(())
 }
 
 /// Send one request to the running daemon and read one response.
 async fn request(req: Value) -> Option<Value> {
-    let sock = control::connect().await?;
-    let (r, mut w) = sock.into_split();
+    let (r, mut w) = control::connect().await?;
     w.write_all(format!("{req}\n").as_bytes()).await.ok()?;
     let line = BufReader::new(r).lines().next_line().await.ok()??;
     serde_json::from_str(&line).ok()
@@ -219,8 +259,7 @@ async fn pair(json_mode: bool) -> Result<()> {
         }
     };
     // Preferred: ask the running daemon to open a pairing window.
-    if let Some(sock) = control::connect().await {
-        let (r, mut w) = sock.into_split();
+    if let Some((r, mut w)) = control::connect().await {
         w.write_all(b"{\"cmd\":\"pair\"}\n").await?;
         let mut lines = BufReader::new(r).lines();
         let mut ok = false;

@@ -2,7 +2,7 @@ pkgbase = test-bed-git
 	pkgdesc = Mirror, control and test apps on up to five Android phones over Wi-Fi (GTK4)
 	pkgver = 1.1.0
 	pkgrel = 1
-	url = https://github.com/Malverma/Test-Bed
+	url = https://github.com/PocketStudiosLLC/Test-Bed
 	install = test-bed.install
 	arch = x86_64
 	arch = aarch64
@@ -36,7 +36,7 @@ pkgbase = test-bed-git
 	replaces = android-controller-git
 	options = !lto
 	options = !debug
-	source = test-bed::git+https://github.com/Malverma/Test-Bed.git
+	source = test-bed::git+https://github.com/PocketStudiosLLC/Test-Bed.git
 	sha256sums = SKIP
 
 pkgname = test-bed-git

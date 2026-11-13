@@ -68,7 +68,7 @@ pub enum HostMsg {
 /// Maximum control message size; anything larger is a protocol error.
 const MAX_MSG: usize = 1 << 20;
 
-pub async fn write_msg<T: Serialize>(w: &mut quinn::SendStream, msg: &T) -> Result<()> {
+pub async fn write_msg<T: Serialize>(w: &mut crate::net::SendStream, msg: &T) -> Result<()> {
     let body = postcard::to_stdvec(msg)?;
     let mut buf = Vec::with_capacity(body.len() + 4);
     buf.extend_from_slice(&(body.len() as u32).to_le_bytes());
@@ -78,12 +78,10 @@ pub async fn write_msg<T: Serialize>(w: &mut quinn::SendStream, msg: &T) -> Resu
 }
 
 /// Read one message; `Ok(None)` on clean end of stream.
-pub async fn read_msg<T: DeserializeOwned>(r: &mut quinn::RecvStream) -> Result<Option<T>> {
+pub async fn read_msg<T: DeserializeOwned>(r: &mut crate::net::RecvStream) -> Result<Option<T>> {
     let mut len = [0u8; 4];
-    match r.read_exact(&mut len).await {
-        Ok(()) => {}
-        Err(quinn::ReadExactError::FinishedEarly(0)) => return Ok(None),
-        Err(e) => return Err(e.into()),
+    if !r.read_exact_or_end(&mut len).await? {
+        return Ok(None);
     }
     let len = u32::from_le_bytes(len) as usize;
     if len > MAX_MSG {

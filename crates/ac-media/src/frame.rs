@@ -1,6 +1,10 @@
 //! Decoded frames handed from a decode thread to the UI.
 
+#[cfg(unix)]
 use std::os::fd::RawFd;
+/// dma-bufs are Linux only; elsewhere the type just has to exist.
+#[cfg(not(unix))]
+pub type RawFd = i32;
 use std::time::Instant;
 
 use ffmpeg_sys_next as ff;

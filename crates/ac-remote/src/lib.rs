@@ -10,10 +10,14 @@ pub mod connection;
 pub mod discovery;
 pub mod hostctl;
 pub mod identity;
+pub mod internet;
+pub mod ipc;
+pub mod net;
 pub mod pairing;
 pub mod playback;
 pub mod paths;
 pub mod proto;
+pub mod resample;
 pub mod tls;
 pub mod transport;
 pub mod trust;
@@ -26,6 +30,10 @@ pub const DEFAULT_PORT: u16 = 47800;
 
 /// This machine's hostname, used as the default device name.
 pub fn hostname() -> String {
+    #[cfg(windows)]
+    if let Ok(n) = std::env::var("COMPUTERNAME") {
+        return n;
+    }
     std::fs::read_to_string("/proc/sys/kernel/hostname")
         .or_else(|_| std::fs::read_to_string("/etc/hostname"))
         .map(|s| s.trim().to_string())

@@ -1,21 +1,24 @@
 //! Managing the local host daemon from a frontend: talking to its control
-//! socket, installing the systemd user service, and the one-time system
-//! setup (firewall, uinput access) through pkexec.
+//! socket, starting it at login (a systemd user service on Linux, a Run
+//! entry on Windows), and Linux's one-time system setup (firewall, uinput
+//! access) through pkexec.
 
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::PathBuf;
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
-use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
-use tokio::net::UnixStream;
+
+use crate::ipc::{Reader, Writer};
 
 pub const SERVICE: &str = "test-bed-share.service";
 /// The standalone RemoteLinux host, which Test Bed replaces (same port).
 pub const REMOTELINUX_SERVICE: &str = "rl-host.service";
+#[cfg(unix)]
 const BINARY: &str = "test-bed-share";
+#[cfg(windows)]
+const BINARY: &str = "test-bed-share.exe";
 
 /// Status reported by a running host daemon.
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -28,6 +31,19 @@ pub struct HostStatus {
     pub client: Option<ConnectedClient>,
     #[serde(default)]
     pub paired: Vec<PairedClient>,
+    #[serde(default)]
+    pub internet: InternetStatus,
+}
+
+/// The daemon's state on the internet (spec3).
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct InternetStatus {
+    pub enabled: bool,
+    pub id: Option<String>,
+    /// Connected to a relay: other PCs can reach this one.
+    pub online: bool,
+    pub relay: Option<String>,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -49,11 +65,13 @@ pub struct PairedClient {
     pub fingerprint: String,
     pub fingerprint_short: String,
     pub paired_at: u64,
+    /// Paired over the internet.
+    #[serde(default)]
+    pub internet: bool,
 }
 
-async fn connect() -> Result<(Lines<BufReader<OwnedReadHalf>>, OwnedWriteHalf)> {
-    let sock = UnixStream::connect(crate::paths::host_control_socket()).await.context("sharing is not running")?;
-    let (r, w) = sock.into_split();
+async fn connect() -> Result<(Lines<BufReader<Reader>>, Writer)> {
+    let (r, w) = crate::ipc::connect().await.context("sharing is not running")?;
     Ok((BufReader::new(r).lines(), w))
 }
 
@@ -83,9 +101,11 @@ pub async fn disconnect_client() -> Result<()> {
 /// An open pairing window. Dropping it closes the window on the host.
 pub struct PairWindow {
     pub pin: String,
+    /// For pairing over the internet: the whole code to send.
+    pub invite: Option<String>,
     pub expires_in: u64,
-    lines: Lines<BufReader<OwnedReadHalf>>,
-    _w: OwnedWriteHalf,
+    lines: Lines<BufReader<Reader>>,
+    _w: Writer,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -98,12 +118,25 @@ pub enum PairEvent {
 
 impl PairWindow {
     pub async fn open() -> Result<Self> {
+        Self::open_cmd("pair").await
+    }
+
+    /// Pairing over the internet: an invite code instead of a LAN PIN.
+    pub async fn open_invite() -> Result<Self> {
+        Self::open_cmd("invite").await
+    }
+
+    async fn open_cmd(cmd: &str) -> Result<Self> {
         let (mut lines, mut w) = connect().await?;
-        w.write_all(b"{\"cmd\":\"pair\"}\n").await?;
+        w.write_all(format!("{}\n", json!({ "cmd": cmd })).as_bytes()).await?;
         let line = lines.next_line().await?.ok_or_else(|| anyhow!("host closed the control connection"))?;
         let v: Value = serde_json::from_str(&line)?;
+        if let Some(e) = v["error"].as_str() {
+            bail!("{e}");
+        }
         let pin = v["pin"].as_str().ok_or_else(|| anyhow!("host did not return a PIN: {v}"))?.to_string();
-        Ok(Self { pin, expires_in: v["expires_in"].as_u64().unwrap_or(120), lines, _w: w })
+        let invite = v["invite"].as_str().map(str::to_string);
+        Ok(Self { pin, invite, expires_in: v["expires_in"].as_u64().unwrap_or(120), lines, _w: w })
     }
 
     /// Wait for the next pairing event. Returns `Expired` if the host goes away.
@@ -124,13 +157,35 @@ impl PairWindow {
 
 // ---- Service management -------------------------------------------------
 
+/// Turn access from other networks on or off, and restart sharing (if on)
+/// so it takes effect.
+pub fn set_internet_access(on: bool) -> Result<()> {
+    let mut cfg = crate::config::HostConfig::load()?;
+    if cfg.internet != on {
+        cfg.internet = on;
+        cfg.save()?;
+    }
+    if service_enabled() {
+        restart_service()?;
+    }
+    Ok(())
+}
+
 /// The `test-bed-share` binary: next to the current executable, else on PATH.
 pub fn host_binary() -> Option<PathBuf> {
     if let Some(p) = std::env::current_exe().ok().and_then(|e| Some(e.parent()?.join(BINARY))).filter(|p| p.exists()) {
         return Some(p);
     }
-    std::env::var_os("PATH")?.to_str()?.split(':').map(|d| Path::new(d).join(BINARY)).find(|p| p.exists())
+    std::env::split_paths(&std::env::var_os("PATH")?).map(|d| d.join(BINARY)).find(|p| p.exists())
 }
+
+pub use platform::*;
+
+#[cfg(unix)]
+mod platform {
+use super::*;
+use std::path::Path;
+use std::process::Command;
 
 fn systemctl(args: &[&str]) -> Result<std::process::Output> {
     Command::new("systemctl").arg("--user").args(args).output().context("running systemctl")
@@ -142,7 +197,7 @@ pub fn service_enabled() -> bool {
 }
 
 /// The user service's unit file for `bin`.
-fn unit_file(bin: &Path) -> String {
+pub(super) fn unit_file(bin: &Path) -> String {
     format!(
         "[Unit]\nDescription=Test Bed: share this PC with paired computers\nAfter=graphical-session.target\nPartOf=graphical-session.target\n\n\
          [Service]\nExecStart=\"{}\" run\nRestart=on-failure\nRestartSec=2\n\n[Install]\nWantedBy=graphical-session.target\n",
@@ -152,13 +207,21 @@ fn unit_file(bin: &Path) -> String {
 }
 
 /// The binary an `ExecStart=` line runs.
-fn exec_binary(unit: &str) -> Option<PathBuf> {
+pub(super) fn exec_binary(unit: &str) -> Option<PathBuf> {
     let exec = unit.lines().find_map(|l| l.strip_prefix("ExecStart="))?;
     let path = match exec.strip_prefix('"') {
         Some(q) => q.split('"').next()?.replace("%%", "%"),
         None => exec.split_whitespace().next()?.to_string(),
     };
     Some(PathBuf::from(path))
+}
+
+pub fn restart_service() -> Result<()> {
+    let o = systemctl(&["restart", SERVICE])?;
+    if !o.status.success() {
+        bail!("couldn't restart sharing: {}", String::from_utf8_lossy(&o.stderr).trim());
+    }
+    Ok(())
 }
 
 /// Install (or update) the user service for `bin` and start it now and at every login.
@@ -260,9 +323,16 @@ pub fn fix_uinput() -> Result<()> {
     ))
 }
 
-#[cfg(test)]
+}
+
+#[cfg(windows)]
+#[path = "hostctl_windows.rs"]
+mod platform;
+
+#[cfg(all(test, unix))]
 mod tests {
-    use super::*;
+    use super::platform::*;
+    use std::path::Path;
 
     #[test]
     fn the_unit_runs_a_path_with_spaces() {

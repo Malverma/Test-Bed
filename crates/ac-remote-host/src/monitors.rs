@@ -1,4 +1,5 @@
-//! Monitor layout from Hyprland (`hyprctl -j monitors`).
+//! Monitor layout: from Hyprland (`hyprctl -j monitors`) on Linux, from
+//! DXGI on Windows.
 
 use anyhow::{Context, Result};
 use ac_remote::proto::MonitorInfo;
@@ -7,6 +8,7 @@ use serde::Deserialize;
 use crate::input::Target;
 
 #[derive(Deserialize)]
+#[cfg_attr(windows, allow(dead_code))]
 struct HyprMonitor {
     name: String,
     #[serde(default)]
@@ -27,6 +29,7 @@ struct HyprMonitor {
     disabled: bool,
 }
 
+#[cfg_attr(windows, allow(dead_code))]
 fn one() -> f64 {
     1.0
 }
@@ -39,6 +42,12 @@ pub struct Monitor {
     pub logical_h: u32,
 }
 
+#[cfg(windows)]
+pub fn list() -> Result<Vec<Monitor>> {
+    crate::capture::monitors()
+}
+
+#[cfg(unix)]
 pub fn list() -> Result<Vec<Monitor>> {
     let out = std::process::Command::new("hyprctl")
         .args(["-j", "monitors"])
@@ -48,6 +57,7 @@ pub fn list() -> Result<Vec<Monitor>> {
     parse(&out.stdout)
 }
 
+#[cfg_attr(windows, allow(dead_code))]
 fn parse(json: &[u8]) -> Result<Vec<Monitor>> {
     let mons: Vec<HyprMonitor> = serde_json::from_slice(json).context("parsing hyprctl output")?;
     Ok(mons

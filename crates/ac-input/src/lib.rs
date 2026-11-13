@@ -5,6 +5,7 @@ pub mod broadcast;
 pub mod keymap;
 pub mod letterbox;
 pub mod meta;
+pub mod pc_keys;
 
 pub use keymap::keycode_for;
 pub use letterbox::Letterbox;

@@ -28,7 +28,7 @@ lets phones **without** wireless debugging connect without ADB at all:
 
 1. On the phone, open this link and install the app (allow your browser to
    "install unknown apps" when Android asks):
-   **https://github.com/Malverma/Test-Bed/raw/main/android-helper/dist/wireless-debugging-keeper.apk**
+   **https://github.com/PocketStudiosLLC/Test-Bed/raw/main/android-helper/dist/wireless-debugging-keeper.apk**
    One APK works on 32-bit and 64-bit phones (it has no native code).
    If Android says "There was a problem parsing the package", the phone is
    older than Android 6, or the download is incomplete: delete it from

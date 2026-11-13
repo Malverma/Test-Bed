@@ -9,6 +9,7 @@ use anyhow::{Context, Result};
 use bytes::Bytes;
 use ac_remote::config::{ClientConfig, HostConfig};
 use ac_remote::identity::{Identity, Role};
+use ac_remote::net::{self, Conn};
 use ac_remote::pairing::{self, HostPairOutcome, PairingWindow};
 use ac_remote::proto::{read_msg, write_msg, ClientMsg, HostMsg, Motion};
 use ac_remote::transport::{self, ALPN_PAIR, ALPN_PROBE, ALPN_SESSION};
@@ -57,7 +58,7 @@ pub struct ClientStatus {
 
 struct Session {
     id: u64,
-    conn: quinn::Connection,
+    conn: Conn,
     name: String,
     fingerprint: String,
     started: Instant,
@@ -72,11 +73,25 @@ pub struct Host {
     pub name: String,
     pub listen: SocketAddr,
     pairing: Mutex<Option<PairingWindow>>,
+    /// Pairing over the internet: open while an invite code is shown.
+    invite: Mutex<Option<PairingWindow>>,
     pub pair_events: broadcast::Sender<PairEvent>,
     session: Mutex<Option<Session>>,
     injector: Mutex<Option<Injector>>,
     next_id: AtomicU64,
     endpoint: Mutex<Option<quinn::Endpoint>>,
+    internet: Mutex<Option<iroh::Endpoint>>,
+}
+
+/// The share service's state on the internet, for the PC tab.
+#[derive(Debug, Clone, Serialize)]
+pub struct InternetStatus {
+    pub enabled: bool,
+    pub id: Option<String>,
+    /// Connected to a relay: other PCs can reach this one.
+    pub online: bool,
+    pub relay: Option<String>,
+    pub error: Option<String>,
 }
 
 impl Host {
@@ -89,11 +104,13 @@ impl Host {
             identity,
             listen,
             pairing: Mutex::new(None),
+            invite: Mutex::new(None),
             pair_events: broadcast::channel(16).0,
             session: Mutex::new(None),
             injector: Mutex::new(None),
             next_id: AtomicU64::new(1),
             endpoint: Mutex::new(None),
+            internet: Mutex::new(None),
         }))
     }
 
@@ -114,6 +131,46 @@ impl Host {
 
     pub fn close_pairing(&self) {
         *self.pairing.lock().unwrap() = None;
+    }
+
+    /// Open a pairing window for the internet; returns the invite code.
+    pub fn open_invite(&self) -> Result<(String, PairingWindow)> {
+        let ep = self.internet.lock().unwrap().clone().context("access from other networks is off on this PC")?;
+        let w = PairingWindow::with_lifetime(ac_remote::internet::INVITE_LIFETIME);
+        let relay = ep.addr().relay_urls().next().cloned();
+        let code = ac_remote::internet::Invite { id: ep.id(), pin: w.pin.clone(), relay }.encode();
+        *self.invite.lock().unwrap() = Some(w.clone());
+        tracing::info!("invite open for {}s", w.remaining().as_secs());
+        Ok((code, w))
+    }
+
+    pub fn close_invite(&self) {
+        *self.invite.lock().unwrap() = None;
+    }
+
+    fn invite_open(&self) -> bool {
+        let mut p = self.invite.lock().unwrap();
+        if p.as_ref().is_some_and(|w| w.expired()) {
+            *p = None;
+            let _ = self.pair_events.send(PairEvent::Expired);
+        }
+        p.is_some()
+    }
+
+    pub fn internet_status(&self) -> InternetStatus {
+        let ep = self.internet.lock().unwrap().clone();
+        let mut st = InternetStatus { enabled: self.config.internet, id: None, online: false, relay: None, error: None };
+        if let Some(ep) = ep {
+            use iroh::Watcher;
+            st.id = Some(ep.id().to_string());
+            let relays = ep.home_relay_status().get();
+            st.online = relays.iter().any(|r| r.is_connected());
+            st.relay = relays.first().map(|r| r.url().to_string());
+            st.error = relays.iter().find_map(|r| r.last_error().map(|e| e.to_string())).filter(|_| !st.online);
+        } else if self.config.internet {
+            st.error = Some("starting".into());
+        }
+        st
     }
 
     pub fn pairing_open(&self) -> bool {
@@ -142,7 +199,7 @@ impl Host {
         Some(ClientStatus {
             name: s.name.clone(),
             fingerprint: s.fingerprint.clone(),
-            address: s.conn.remote_address().to_string(),
+            address: s.conn.describe(),
             connected_secs: s.started.elapsed().as_secs(),
             monitor: s.stream.as_ref().map(|x| x.0.clone()),
             width: s.stream.as_ref().map_or(0, |x| x.1),
@@ -155,7 +212,7 @@ impl Host {
 
     pub fn disconnect_client(&self) -> bool {
         if let Some(s) = self.session.lock().unwrap().as_ref() {
-            s.conn.close(close::NORMAL.into(), b"disconnected by host");
+            s.conn.close(close::NORMAL, b"disconnected by host");
             return true;
         }
         false
@@ -164,6 +221,9 @@ impl Host {
     pub fn shutdown(&self) {
         if let Some(ep) = self.endpoint.lock().unwrap().as_ref() {
             ep.close(close::SHUTDOWN.into(), b"host shutting down");
+        }
+        if let Some(ep) = self.internet.lock().unwrap().take() {
+            tokio::spawn(async move { ep.close().await });
         }
         if let Some(i) = self.injector.lock().unwrap().as_mut() {
             i.release_all();
@@ -181,7 +241,7 @@ impl Host {
                 let remote = incoming.remote_address();
                 match incoming.await {
                     Ok(conn) => {
-                        if let Err(e) = host.handle(conn).await {
+                        if let Err(e) = host.handle(conn.into()).await {
                             tracing::warn!("{remote}: {e:#}");
                         }
                     }
@@ -192,47 +252,86 @@ impl Host {
         Ok(())
     }
 
-    async fn handle(self: &Arc<Self>, conn: quinn::Connection) -> Result<()> {
-        let fp = transport::peer_fingerprint(&conn)?;
-        match transport::alpn(&conn).as_deref() {
+    /// Accept PCs paired over the internet, if allowed (spec3). Runs next to
+    /// [`Host::serve`] and never ends it: a failure here leaves the LAN alone.
+    pub async fn serve_internet(self: &Arc<Self>) {
+        if !self.config.internet {
+            return;
+        }
+        let ep = match ac_remote::internet::host_endpoint(&self.config.relay).await {
+            Ok(ep) => ep,
+            Err(e) => return tracing::error!("access from other networks disabled: {e:#}"),
+        };
+        tracing::info!("reachable from other networks as {}", net::short_id(&ep.id()));
+        *self.internet.lock().unwrap() = Some(ep.clone());
+        while let Some(incoming) = ep.accept().await {
+            let host = self.clone();
+            tokio::spawn(async move {
+                match incoming.await {
+                    Ok(conn) => {
+                        let conn = Conn::from(conn);
+                        let who = conn.describe();
+                        if let Err(e) = host.handle(conn).await {
+                            tracing::warn!("{who}: {e:#}");
+                        }
+                    }
+                    Err(e) => tracing::debug!("internet handshake failed: {e}"),
+                }
+            });
+        }
+    }
+
+    async fn handle(self: &Arc<Self>, conn: Conn) -> Result<()> {
+        let internet = matches!(conn, Conn::Internet(_));
+        let fp = conn.peer_key()?;
+        match conn.alpn().as_deref() {
             Some(ALPN_PAIR) => self.handle_pair(conn).await,
             Some(ALPN_PROBE) => {
-                conn.close(close::NORMAL.into(), b"ok");
+                conn.close(close::NORMAL, b"ok");
                 Ok(())
             }
             Some(ALPN_SESSION) => {
-                let Some(client) = AuthorizedClients::load()?.find_fingerprint(&fp).cloned() else {
-                    tracing::warn!("rejecting unpaired client {} ({})", conn.remote_address(), ac_remote::identity::short_fingerprint(&fp));
-                    conn.close(close::NOT_PAIRED.into(), b"not paired with this host");
+                let clients = if internet { AuthorizedClients::load_internet()? } else { AuthorizedClients::load()? };
+                let Some(client) = clients.find_fingerprint(&fp).cloned() else {
+                    tracing::warn!("rejecting unpaired client {} ({})", conn.describe(), ac_remote::identity::short_fingerprint(&fp));
+                    conn.close(close::NOT_PAIRED, b"not paired with this host");
                     return Ok(());
                 };
                 self.handle_session(conn, client).await
             }
             _ => {
-                conn.close(close::VERSION.into(), b"unknown protocol");
+                conn.close(close::VERSION, b"unknown protocol");
                 Ok(())
             }
         }
     }
 
-    async fn handle_pair(self: &Arc<Self>, conn: quinn::Connection) -> Result<()> {
-        let pin = if self.pairing_open() { self.pairing.lock().unwrap().as_ref().map(|w| w.pin.clone()) } else { None };
-        let outcome = pairing::pair_as_host(&conn, &self.identity.fingerprint, &self.name, pin.as_deref()).await?;
+    async fn handle_pair(self: &Arc<Self>, conn: Conn) -> Result<()> {
+        // A LAN code pairs LAN connections only, an invite code internet ones.
+        let internet_id = match &conn {
+            Conn::Internet(_) => Some(self.internet.lock().unwrap().as_ref().map(|ep| ep.id().to_string()).context("internet endpoint closed")?),
+            Conn::Lan(_) => None,
+        };
+        let window = if internet_id.is_some() { &self.invite } else { &self.pairing };
+        let open = if internet_id.is_some() { self.invite_open() } else { self.pairing_open() };
+        let pin = if open { window.lock().unwrap().as_ref().map(|w| w.pin.clone()) } else { None };
+        let own = internet_id.clone().unwrap_or_else(|| self.identity.fingerprint.clone());
+        let outcome = pairing::pair_as_host(&conn, &own, &self.name, pin.as_deref()).await?;
         match outcome {
             HostPairOutcome::Paired(p) => {
-                let mut store = AuthorizedClients::load()?;
+                let mut store = if internet_id.is_some() { AuthorizedClients::load_internet()? } else { AuthorizedClients::load()? };
                 store.upsert(AuthorizedClient { name: p.peer_name.clone(), fingerprint: p.peer_fingerprint.clone(), paired_at: ac_remote::unix_now() });
                 store.save()?;
-                self.close_pairing();
+                *window.lock().unwrap() = None;
                 tracing::info!("paired with {:?}", p.peer_name);
                 let _ = self.pair_events.send(PairEvent::Paired { name: p.peer_name, fingerprint: p.peer_fingerprint });
             }
             HostPairOutcome::WrongPin => {
-                let mut g = self.pairing.lock().unwrap();
+                let mut g = window.lock().unwrap();
                 if let Some(w) = g.as_mut() {
                     w.attempts += 1;
                     let left = pairing::MAX_ATTEMPTS.saturating_sub(w.attempts);
-                    tracing::warn!("wrong pairing PIN from {} ({left} attempts left)", conn.remote_address());
+                    tracing::warn!("wrong pairing PIN from {} ({left} attempts left)", conn.describe());
                     let _ = self.pair_events.send(PairEvent::WrongPin { attempts_left: left });
                     if left == 0 {
                         *g = None;
@@ -242,18 +341,18 @@ impl Host {
             }
             HostPairOutcome::Refused(r) => tracing::info!("pairing refused: {r}"),
         }
-        conn.close(close::NORMAL.into(), b"");
+        conn.close(close::NORMAL, b"");
         Ok(())
     }
 
-    async fn handle_session(self: &Arc<Self>, conn: quinn::Connection, client: AuthorizedClient) -> Result<()> {
+    async fn handle_session(self: &Arc<Self>, conn: Conn, client: AuthorizedClient) -> Result<()> {
         let (mut send, mut recv) = conn.accept_bi().await?;
         let (settings, client_name) = match read_msg::<ClientMsg>(&mut recv).await? {
             Some(ClientMsg::Hello { version, client_name, settings }) => {
                 if version != ac_remote::PROTOCOL_VERSION {
                     let text = format!("protocol version mismatch: host {} client {version}", ac_remote::PROTOCOL_VERSION);
                     write_msg(&mut send, &HostMsg::Error { text }).await?;
-                    conn.close(close::VERSION.into(), b"version mismatch");
+                    conn.close(close::VERSION, b"version mismatch");
                     return Ok(());
                 }
                 (settings, client_name)
@@ -271,7 +370,7 @@ impl Host {
             let mut s = self.session.lock().unwrap();
             if let Some(old) = s.take() {
                 tracing::info!("replacing session with {:?}", old.name);
-                old.conn.close(close::REPLACED.into(), b"replaced by a new connection");
+                old.conn.close(close::REPLACED, b"replaced by a new connection");
             }
             *s = Some(Session {
                 id,
@@ -284,7 +383,7 @@ impl Host {
                 last_rate: (Instant::now(), 0, 0),
             });
         }
-        tracing::info!("session started: {:?} ({}) from {}", client.name, client_name, conn.remote_address());
+        tracing::info!("session started: {:?} ({}) from {}", client.name, client_name, conn.describe());
         if self.config.notify_on_connect {
             notify(&format!("{} connected", client.name));
         }
@@ -312,9 +411,9 @@ impl Host {
 
     async fn run_session(
         self: &Arc<Self>,
-        conn: &quinn::Connection,
-        send: quinn::SendStream,
-        mut recv: quinn::RecvStream,
+        conn: &Conn,
+        send: net::SendStream,
+        mut recv: net::RecvStream,
         settings: ac_remote::proto::StreamSettings,
         id: u64,
         bytes_sent: Arc<AtomicU64>,
@@ -479,7 +578,10 @@ impl Host {
                         ClientMsg::Bye => break,
                         ClientMsg::Hello { .. } => tracing::warn!("duplicate Hello ignored"),
                         ClientMsg::SwitchSides { host_name, host_fingerprint, port } => {
-                            let reply = match accept_switch(&host_name, &host_fingerprint, SocketAddr::new(peer.ip().to_canonical(), port)) {
+                            let reply = match peer
+                                .ok_or_else(|| anyhow::anyhow!("switching sides works on the local network only"))
+                                .and_then(|peer| accept_switch(&host_name, &host_fingerprint, SocketAddr::new(peer.ip().to_canonical(), port)))
+                            {
                                 Ok((client_name, client_fingerprint)) => {
                                     switch_to = Some(host_fingerprint);
                                     HostMsg::SwitchReady { client_name, client_fingerprint }
@@ -514,27 +616,19 @@ impl Host {
             r = control => r,
         };
         match res {
-            Err(e) if is_closed(&e) => Ok(()),
+            Err(e) if net::is_closed(&e) => Ok(()),
             Err(e) => {
                 let mut reason = format!("{e:#}");
                 reason.truncate(500);
-                conn.close(close::ERROR.into(), reason.as_bytes());
+                conn.close(close::ERROR, reason.as_bytes());
                 Err(e)
             }
             Ok(()) => {
-                conn.close(close::NORMAL.into(), b"session ended");
+                conn.close(close::NORMAL, b"session ended");
                 Ok(())
             }
         }
     }
-}
-
-fn is_closed(e: &anyhow::Error) -> bool {
-    e.chain().any(|c| {
-        c.downcast_ref::<quinn::ConnectionError>().is_some()
-            || c.downcast_ref::<quinn::ReadExactError>().is_some()
-            || c.downcast_ref::<quinn::WriteError>().is_some()
-    })
 }
 
 /// Switching sides, step one: trust the client's own shared PC (the client
@@ -543,7 +637,7 @@ fn is_closed(e: &anyhow::Error) -> bool {
 fn accept_switch(name: &str, fingerprint: &str, address: SocketAddr) -> Result<(String, String)> {
     anyhow::ensure!(viewer_binary().is_some(), "Test Bed isn't installed on this PC");
     let mut known = KnownHosts::load()?;
-    known.upsert(KnownHost { name: name.into(), address: address.to_string(), fingerprint: fingerprint.into(), paired_at: ac_remote::unix_now(), last_seen: None });
+    known.upsert(KnownHost { name: name.into(), address: address.to_string(), fingerprint: fingerprint.into(), paired_at: ac_remote::unix_now(), last_seen: None, internet: false });
     known.save()?;
     let me = Identity::load_or_create(Role::Client)?;
     let my_name = ClientConfig::load().map(|c| c.device_name()).unwrap_or_else(|_| ac_remote::hostname());
@@ -552,11 +646,11 @@ fn accept_switch(name: &str, fingerprint: &str, address: SocketAddr) -> Result<(
 
 /// Test Bed, installed next to this service.
 fn viewer_binary() -> Option<std::path::PathBuf> {
-    const BINARY: &str = "test-bed";
+    const BINARY: &str = if cfg!(windows) { "test-bed.exe" } else { "test-bed" };
     if let Some(p) = std::env::current_exe().ok().and_then(|e| Some(e.parent()?.join(BINARY))).filter(|p| p.exists()) {
         return Some(p);
     }
-    std::env::var_os("PATH")?.to_str()?.split(':').map(|d| std::path::Path::new(d).join(BINARY)).find(|p| p.exists())
+    std::env::split_paths(&std::env::var_os("PATH")?).map(|d| d.join(BINARY)).find(|p| p.exists())
 }
 
 /// Switching sides, step two: Test Bed on this PC connects to the client.

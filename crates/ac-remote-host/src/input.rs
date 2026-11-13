@@ -1,10 +1,7 @@
-//! Input injection through uinput virtual devices.
+//! Input injection: uinput virtual devices on Linux, `SendInput` on Windows.
+//! The protocol's key and button codes are Linux evdev codes on both.
 
-use std::collections::HashSet;
-
-use anyhow::{Context, Result};
-use evdev::uinput::VirtualDevice;
-use evdev::{AbsInfo, AbsoluteAxisCode, AttributeSet, BusType, EventType, InputEvent, InputId, KeyCode, RelativeAxisCode, UinputAbsSetup};
+pub use imp::Injector;
 
 /// Absolute axis resolution. Coordinates are mapped onto the monitor's
 /// rectangle within the compositor's layout (see `set_target`).
@@ -28,6 +25,29 @@ pub struct Target {
     pub mon_h: u32,
 }
 
+fn is_valid_key(code: u16) -> bool {
+    // KEY_ESC..KEY_MICMUTE plus the extended range; excludes button codes.
+    (1..=0x2ff).contains(&code) && !(0x100..0x160).contains(&code)
+}
+
+fn is_valid_button(code: u16) -> bool {
+    (BTN_MIN..=BTN_MAX).contains(&code)
+}
+
+#[cfg(windows)]
+#[path = "input_windows.rs"]
+mod imp;
+
+#[cfg(unix)]
+mod imp {
+use std::collections::HashSet;
+
+use anyhow::{Context, Result};
+use evdev::uinput::VirtualDevice;
+use evdev::{AbsInfo, AbsoluteAxisCode, AttributeSet, BusType, EventType, InputEvent, InputId, KeyCode, RelativeAxisCode, UinputAbsSetup};
+
+use super::*;
+
 pub struct Injector {
     kbd: VirtualDevice,
     ptr: VirtualDevice,
@@ -38,15 +58,6 @@ pub struct Injector {
     last_motion_seq: Option<u32>,
     rel_rem: (f32, f32),
     wheel_rem: (i32, i32),
-}
-
-fn is_valid_key(code: u16) -> bool {
-    // KEY_ESC..KEY_MICMUTE plus the extended range; excludes button codes.
-    (1..=0x2ff).contains(&code) && !(0x100..0x160).contains(&code)
-}
-
-fn is_valid_button(code: u16) -> bool {
-    (BTN_MIN..=BTN_MAX).contains(&code)
 }
 
 impl Injector {
@@ -243,6 +254,8 @@ impl Drop for Injector {
     fn drop(&mut self) {
         self.release_all();
     }
+}
+
 }
 
 /// Map a normalised position within the monitor to the absolute axis range,

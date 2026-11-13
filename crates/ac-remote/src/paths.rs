@@ -1,15 +1,31 @@
+//! Where Test Bed keeps its files: XDG directories on Linux, `%APPDATA%`
+//! (settings, pairings) and `%LOCALAPPDATA%` (keys, logs) on Windows.
+
 use std::path::PathBuf;
 
+#[cfg(unix)]
 fn home() -> PathBuf {
     std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/tmp"))
 }
 
 fn xdg_config() -> PathBuf {
-    std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|| home().join(".config"))
+    if let Some(d) = std::env::var_os("XDG_CONFIG_HOME") {
+        return PathBuf::from(d);
+    }
+    #[cfg(unix)]
+    return home().join(".config");
+    #[cfg(windows)]
+    return std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
 }
 
 fn xdg_data() -> PathBuf {
-    std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).unwrap_or_else(|| home().join(".local/share"))
+    if let Some(d) = std::env::var_os("XDG_DATA_HOME") {
+        return PathBuf::from(d);
+    }
+    #[cfg(unix)]
+    return home().join(".local/share");
+    #[cfg(windows)]
+    return std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
 }
 
 /// `~/.config/systemd/user`
@@ -28,6 +44,7 @@ pub fn data_dir() -> PathBuf {
 }
 
 /// `$XDG_RUNTIME_DIR/test-bed`
+#[cfg(unix)]
 pub fn runtime_dir() -> PathBuf {
     std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
@@ -77,31 +94,42 @@ fn copy_tree(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<us
     Ok(n)
 }
 
+#[cfg(unix)]
 fn rustix_uid() -> String {
     use std::os::unix::fs::MetadataExt;
     std::fs::metadata("/proc/self").map(|m| m.uid().to_string()).unwrap_or_else(|_| "user".into())
 }
 
-/// Unix socket the host daemon listens on for local control (CLI / UI).
+/// Where the host daemon listens for local control (CLI / UI): a Unix
+/// socket, or on Windows a named pipe per user.
 pub fn host_control_socket() -> PathBuf {
-    runtime_dir().join("share.sock")
+    #[cfg(unix)]
+    return runtime_dir().join("share.sock");
+    #[cfg(windows)]
+    return PathBuf::from(format!(r"\\.\pipe\test-bed-share-{}", std::env::var("USERNAME").unwrap_or_else(|_| "user".into())));
 }
 
-/// Write a file atomically with the given permissions.
+/// The share service's log on Windows, where it has no journal.
+pub fn share_log() -> PathBuf {
+    data_dir().join("share.log")
+}
+
+/// Write a file atomically with the given permissions. (On Windows, files
+/// under the user's profile are private to them already.)
 pub fn write_private(path: &std::path::Path, data: &[u8], mode: u32) -> anyhow::Result<()> {
     use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
     let tmp = path.with_extension("tmp");
     {
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(mode)
-            .open(&tmp)?;
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut opts, mode);
+        #[cfg(windows)]
+        let _ = mode;
+        let mut f = opts.open(&tmp)?;
         f.write_all(data)?;
         f.sync_all()?;
     }

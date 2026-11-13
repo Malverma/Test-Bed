@@ -21,6 +21,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use ac_input::Letterbox;
+use ac_input::pc_keys::evdev_from_gtk;
 use ac_media::{Backend, Decoder, HwOutput, Mailbox, MediaContext};
 use ac_remote::connection::{self, NetEvent, NetHandle, Outgoing};
 use ac_remote::proto::{ClientMsg, MonitorInfo, Motion, StreamSettings};
@@ -193,6 +194,8 @@ impl Viewer {
             .label("Switch sides")
             .tooltip_text(format!("Let {} control this PC instead (Ctrl+Alt+Shift+S)", host.name))
             .sensitive(false)
+            // Switching sides works on the local network only (spec3 §6).
+            .visible(!host.internet)
             .build();
         let mute_button = gtk::ToggleButton::builder()
             .icon_name("audio-volume-muted-symbolic")
@@ -754,10 +757,9 @@ impl Viewer {
                     v.state.borrow_mut().swallowed.insert(keycode);
                     return glib::Propagation::Stop;
                 }
-                if !v.active() || keycode < 8 {
+                let Some(code) = evdev_from_gtk(keycode).filter(|_| v.active()) else {
                     return glib::Propagation::Proceed;
-                }
-                let code = (keycode - 8) as u16;
+                };
                 // Held keys repeat on the PC itself.
                 if v.state.borrow_mut().keys.insert(code) {
                     v.send(ClientMsg::Key { code, pressed: true });
@@ -769,10 +771,10 @@ impl Viewer {
             let weak = Rc::downgrade(self);
             keys.connect_key_released(move |_, _, keycode, _| {
                 let Some(v) = weak.upgrade() else { return };
-                if v.state.borrow_mut().swallowed.remove(&keycode) || keycode < 8 {
+                if v.state.borrow_mut().swallowed.remove(&keycode) {
                     return;
                 }
-                let code = (keycode - 8) as u16;
+                let Some(code) = evdev_from_gtk(keycode) else { return };
                 if v.state.borrow_mut().keys.remove(&code) {
                     v.send(ClientMsg::Key { code, pressed: false });
                 }

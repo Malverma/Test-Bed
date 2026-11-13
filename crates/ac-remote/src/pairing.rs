@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use spake2::{Ed25519Group, Identity as SpakeId, Password, Spake2};
 
+use crate::net::{Conn, SendStream};
 use crate::proto::{read_msg, write_msg};
 
 pub const PIN_LIFETIME: Duration = Duration::from_secs(120);
@@ -61,9 +62,10 @@ pub struct Paired {
     pub peer_fingerprint: String,
 }
 
-/// Client side. `own_fp` is this client's certificate fingerprint.
-pub async fn pair_as_client(conn: &quinn::Connection, own_fp: &str, name: &str, pin: &str) -> Result<Paired> {
-    let host_fp = crate::transport::peer_fingerprint(conn)?;
+/// Client side. `own_fp` is this client's certificate fingerprint, or its
+/// endpoint id over the internet.
+pub async fn pair_as_client(conn: &Conn, own_fp: &str, name: &str, pin: &str) -> Result<Paired> {
+    let host_fp = conn.peer_key()?;
     let (mut send, mut recv) = conn.open_bi().await?;
     let (state, msg) = spake_start(pin);
     write_msg(&mut send, &PairMsg::Hello { version: crate::PROTOCOL_VERSION, name: name.into(), spake: msg }).await?;
@@ -83,7 +85,7 @@ pub async fn pair_as_client(conn: &quinn::Connection, own_fp: &str, name: &str, 
         Some(PairMsg::Refused { reason }) => bail!("pairing failed: {reason}"),
         other => bail!("unexpected pairing message: {other:?}"),
     }
-    let _ = send.finish();
+    send.finish();
     Ok(Paired { peer_name: host_name, peer_fingerprint: host_fp })
 }
 
@@ -93,17 +95,22 @@ pub struct PairingWindow {
     pub pin: String,
     pub opened: Instant,
     pub attempts: u32,
+    pub lifetime: Duration,
 }
 
 impl PairingWindow {
     pub fn new() -> Self {
-        Self { pin: generate_pin(), opened: Instant::now(), attempts: 0 }
+        Self::with_lifetime(PIN_LIFETIME)
+    }
+    /// An invite code is sent by chat or email, so it stays open longer.
+    pub fn with_lifetime(lifetime: Duration) -> Self {
+        Self { pin: generate_pin(), opened: Instant::now(), attempts: 0, lifetime }
     }
     pub fn expired(&self) -> bool {
-        self.opened.elapsed() > PIN_LIFETIME || self.attempts >= MAX_ATTEMPTS
+        self.opened.elapsed() > self.lifetime || self.attempts >= MAX_ATTEMPTS
     }
     pub fn remaining(&self) -> Duration {
-        PIN_LIFETIME.saturating_sub(self.opened.elapsed())
+        self.lifetime.saturating_sub(self.opened.elapsed())
     }
 }
 
@@ -115,8 +122,8 @@ pub enum HostPairOutcome {
 }
 
 /// Host side. `pin` is `None` if no pairing window is open.
-pub async fn pair_as_host(conn: &quinn::Connection, own_fp: &str, name: &str, pin: Option<&str>) -> Result<HostPairOutcome> {
-    let client_fp = crate::transport::peer_fingerprint(conn)?;
+pub async fn pair_as_host(conn: &Conn, own_fp: &str, name: &str, pin: Option<&str>) -> Result<HostPairOutcome> {
+    let client_fp = conn.peer_key()?;
     let (mut send, mut recv) = conn.accept_bi().await?;
     let (client_name, their) = match read_msg::<PairMsg>(&mut recv).await? {
         Some(PairMsg::Hello { version, name, spake }) => {
@@ -155,7 +162,7 @@ pub async fn pair_as_host(conn: &quinn::Connection, own_fp: &str, name: &str, pi
 
 /// Finish a stream and wait (briefly) until the peer has received everything,
 /// so closing the connection right after doesn't discard the last message.
-async fn flush(mut send: quinn::SendStream) {
-    let _ = send.finish();
+async fn flush(mut send: SendStream) {
+    send.finish();
     let _ = tokio::time::timeout(Duration::from_secs(2), send.stopped()).await;
 }

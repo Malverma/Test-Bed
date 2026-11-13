@@ -1,12 +1,12 @@
 //! Local control socket for the CLI and UI: JSON lines over a Unix socket at
-//! `$XDG_RUNTIME_DIR/test-bed/share.sock`.
+//! `$XDG_RUNTIME_DIR/test-bed/share.sock`, or a named pipe on Windows.
 //!
-//! Requests: `{"cmd":"status"}`, `{"cmd":"pair"}`, `{"cmd":"cancel_pair"}`,
-//! `{"cmd":"list"}`, `{"cmd":"unpair","name":"..."}`, `{"cmd":"disconnect"}`.
-//! Each request gets one JSON response line; `pair` additionally streams
-//! events until pairing succeeds, fails or expires.
+//! Requests: `{"cmd":"status"}`, `{"cmd":"pair"}`, `{"cmd":"invite"}`,
+//! `{"cmd":"cancel_pair"}`, `{"cmd":"list"}`, `{"cmd":"unpair","name":"..."}`,
+//! `{"cmd":"disconnect"}`. Each request gets one JSON response line; `pair`
+//! and `invite` (pairing over the internet) additionally stream events until
+//! pairing succeeds, fails or expires.
 
-use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -14,7 +14,7 @@ use ac_remote::trust::AuthorizedClients;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::{UnixListener, UnixStream};
+use ac_remote::ipc::{self, Reader, Writer};
 
 use crate::server::{Host, PairEvent};
 
@@ -26,14 +26,9 @@ struct Request {
 }
 
 pub async fn serve(host: Arc<Host>) -> Result<()> {
-    let path = ac_remote::paths::host_control_socket();
-    std::fs::create_dir_all(path.parent().unwrap())?;
-    std::fs::set_permissions(path.parent().unwrap(), std::fs::Permissions::from_mode(0o700))?;
-    let _ = std::fs::remove_file(&path);
-    let listener = UnixListener::bind(&path)?;
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    let mut listener = ipc::Listener::bind()?;
     loop {
-        let (sock, _) = listener.accept().await?;
+        let sock = listener.accept().await?;
         let host = host.clone();
         tokio::spawn(async move {
             if let Err(e) = handle(host, sock).await {
@@ -54,34 +49,50 @@ pub fn status_json(host: &Host) -> Value {
         "pairing_open": host.pairing_open(),
         "client": host.client_status(),
         "paired": paired,
+        "internet": host.internet_status(),
     })
 }
 
+/// Paired clients, LAN first, then those paired over the internet.
 pub fn paired_json() -> Value {
-    match AuthorizedClients::load() {
-        Ok(a) => json!(a
-            .clients
-            .iter()
-            .map(|c| json!({
-                "name": c.name,
-                "fingerprint": c.fingerprint,
-                "fingerprint_short": ac_remote::identity::short_fingerprint(&c.fingerprint),
-                "paired_at": c.paired_at,
-            }))
-            .collect::<Vec<_>>()),
-        Err(e) => json!({ "error": format!("{e:#}") }),
+    let mut out = Vec::new();
+    for (internet, store) in [(false, AuthorizedClients::load()), (true, AuthorizedClients::load_internet())] {
+        match store {
+            Ok(a) => out.extend(a.clients.iter().map(|c| {
+                json!({
+                    "name": c.name,
+                    "fingerprint": c.fingerprint,
+                    "fingerprint_short": ac_remote::identity::short_fingerprint(&c.fingerprint),
+                    "paired_at": c.paired_at,
+                    "internet": internet,
+                })
+            })),
+            Err(e) => return json!({ "error": format!("{e:#}") }),
+        }
     }
+    json!(out)
 }
 
-async fn send(w: &mut tokio::net::unix::OwnedWriteHalf, v: &Value) -> Result<()> {
+/// Remove a paired client from both lists; true if one was removed.
+pub fn unpair(name: &str) -> Result<bool> {
+    let mut removed = false;
+    for mut store in [AuthorizedClients::load()?, AuthorizedClients::load_internet()?] {
+        if store.remove(name) {
+            store.save()?;
+            removed = true;
+        }
+    }
+    Ok(removed)
+}
+
+async fn send(w: &mut Writer, v: &Value) -> Result<()> {
     let mut line = serde_json::to_vec(v)?;
     line.push(b'\n');
     w.write_all(&line).await?;
     Ok(())
 }
 
-async fn handle(host: Arc<Host>, sock: UnixStream) -> Result<()> {
-    let (r, mut w) = sock.into_split();
+async fn handle(host: Arc<Host>, (r, mut w): (Reader, Writer)) -> Result<()> {
     let mut lines = BufReader::new(r).lines();
     while let Some(line) = lines.next_line().await? {
         let req: Request = match serde_json::from_str(&line) {
@@ -96,28 +107,41 @@ async fn handle(host: Arc<Host>, sock: UnixStream) -> Result<()> {
             "list" => send(&mut w, &json!({ "paired": paired_json() })).await?,
             "unpair" => {
                 let name = req.name.unwrap_or_default();
-                let mut a = AuthorizedClients::load()?;
-                let removed = a.remove(&name);
-                if removed {
-                    a.save()?;
-                }
+                let removed = unpair(&name)?;
                 send(&mut w, &json!({ "removed": removed, "name": name })).await?;
             }
             "disconnect" => send(&mut w, &json!({ "disconnected": host.disconnect_client() })).await?,
             "cancel_pair" => {
                 host.close_pairing();
+                host.close_invite();
                 send(&mut w, &json!({ "cancelled": true })).await?;
             }
-            "pair" => {
+            "pair" | "invite" => {
+                let invite = req.cmd == "invite";
+                let close = |h: &Host| if invite { h.close_invite() } else { h.close_pairing() };
                 let mut events = host.pair_events.subscribe();
-                let win = host.open_pairing();
-                send(&mut w, &json!({ "pin": win.pin, "expires_in": win.remaining().as_secs() })).await?;
+                let win = if invite {
+                    match host.open_invite() {
+                        Ok((code, win)) => {
+                            send(&mut w, &json!({ "invite": code, "pin": win.pin, "expires_in": win.remaining().as_secs() })).await?;
+                            win
+                        }
+                        Err(e) => {
+                            send(&mut w, &json!({ "error": format!("{e:#}") })).await?;
+                            continue;
+                        }
+                    }
+                } else {
+                    let win = host.open_pairing();
+                    send(&mut w, &json!({ "pin": win.pin, "expires_in": win.remaining().as_secs() })).await?;
+                    win
+                };
                 let deadline = tokio::time::sleep(win.remaining());
                 tokio::pin!(deadline);
                 loop {
                     tokio::select! {
                         _ = &mut deadline => {
-                            host.close_pairing();
+                            close(&host);
                             send(&mut w, &json!({ "event": "expired" })).await?;
                             break;
                         }
@@ -130,10 +154,10 @@ async fn handle(host: Arc<Host>, sock: UnixStream) -> Result<()> {
                         },
                         // Requester went away: close the window.
                         l = lines.next_line() => {
-                            if matches!(l, Ok(None) | Err(_)) { host.close_pairing(); return Ok(()); }
+                            if matches!(l, Ok(None) | Err(_)) { close(&host); return Ok(()); }
                             if let Ok(Some(l)) = l {
                                 if l.contains("cancel_pair") {
-                                    host.close_pairing();
+                                    close(&host);
                                     send(&mut w, &json!({ "event": "cancelled" })).await?;
                                     break;
                                 }
@@ -149,6 +173,6 @@ async fn handle(host: Arc<Host>, sock: UnixStream) -> Result<()> {
 }
 
 /// Client side, used by the `test-bed-share` CLI: connect to a running daemon.
-pub async fn connect() -> Option<UnixStream> {
-    UnixStream::connect(ac_remote::paths::host_control_socket()).await.ok()
+pub async fn connect() -> Option<(Reader, Writer)> {
+    ipc::connect().await.ok()
 }

@@ -1,4 +1,6 @@
 //! Trust stores: which clients a host accepts, and which hosts a client knows.
+//! PCs paired over the internet (spec3) live in their own files, keyed by
+//! their iroh endpoint id where LAN PCs have a certificate fingerprint.
 
 use std::path::PathBuf;
 
@@ -17,25 +19,34 @@ pub struct AuthorizedClient {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct KnownHost {
     pub name: String,
-    /// "ip:port" or "hostname:port" used to reach the host.
+    /// "ip:port" or "hostname:port" used to reach the host. For an internet
+    /// host, its relay URL (empty: look it up).
     pub address: String,
+    /// Certificate fingerprint, or an internet host's endpoint id.
     pub fingerprint: String,
     pub paired_at: u64,
     /// Unix time of the last successful connection.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_seen: Option<u64>,
+    /// Reached over the internet (from `internet_hosts.toml`).
+    #[serde(skip)]
+    pub internet: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default)]
 pub struct AuthorizedClients {
     #[serde(default, rename = "client")]
     pub clients: Vec<AuthorizedClient>,
+    #[serde(skip)]
+    internet: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default)]
 pub struct KnownHosts {
     #[serde(default, rename = "host")]
     pub hosts: Vec<KnownHost>,
+    #[serde(skip)]
+    internet: bool,
 }
 
 fn load<T: Default + for<'de> Deserialize<'de>>(path: &PathBuf) -> Result<T> {
@@ -54,11 +65,18 @@ impl AuthorizedClients {
     pub fn path() -> PathBuf {
         config_dir().join("authorized_clients.toml")
     }
+    pub fn internet_path() -> PathBuf {
+        config_dir().join("internet_clients.toml")
+    }
     pub fn load() -> Result<Self> {
         load(&Self::path())
     }
+    /// Clients paired over the internet; `fingerprint` is their endpoint id.
+    pub fn load_internet() -> Result<Self> {
+        Ok(Self { internet: true, ..load(&Self::internet_path())? })
+    }
     pub fn save(&self) -> Result<()> {
-        save(&Self::path(), self)
+        save(&if self.internet { Self::internet_path() } else { Self::path() }, self)
     }
     pub fn find_fingerprint(&self, fp: &str) -> Option<&AuthorizedClient> {
         self.clients.iter().find(|c| c.fingerprint == fp)
@@ -80,11 +98,23 @@ impl KnownHosts {
     pub fn path() -> PathBuf {
         config_dir().join("known_hosts.toml")
     }
+    pub fn internet_path() -> PathBuf {
+        config_dir().join("internet_hosts.toml")
+    }
     pub fn load() -> Result<Self> {
         load(&Self::path())
     }
+    /// Hosts paired over the internet; `fingerprint` is their endpoint id.
+    pub fn load_internet() -> Result<Self> {
+        let mut kh: Self = load(&Self::internet_path())?;
+        kh.internet = true;
+        for h in &mut kh.hosts {
+            h.internet = true;
+        }
+        Ok(kh)
+    }
     pub fn save(&self) -> Result<()> {
-        save(&Self::path(), self)
+        save(&if self.internet { Self::internet_path() } else { Self::path() }, self)
     }
     pub fn find(&self, name: &str) -> Option<&KnownHost> {
         self.hosts.iter().find(|h| h.name == name).or_else(|| self.hosts.iter().find(|h| h.address == name))
