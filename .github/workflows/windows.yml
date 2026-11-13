@@ -17,6 +17,9 @@ jobs:
     runs-on: windows-latest
     env:
       CARGO_HOME: ${{ github.workspace }}\.cargo-home
+      # Windows gives a main thread 1 MB of stack; ffmpeg-sys-next's build
+      # script (bindgen, unoptimised) needs more.
+      RUSTFLAGS: -C link-arg=-Wl,--stack,16777216
     defaults:
       run:
         shell: msys2 {0}
