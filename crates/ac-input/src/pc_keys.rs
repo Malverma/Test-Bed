@@ -107,11 +107,17 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
     fn linux_keycodes() {
-        assert_eq!(evdev_from_gtk(38), if cfg!(windows) { None } else { Some(30) }); // A
-        if !cfg!(windows) {
-            assert_eq!(evdev_from_gtk(8), None);
-            assert_eq!(evdev_from_gtk(3), None);
-        }
+        assert_eq!(evdev_from_gtk(38), Some(30)); // A
+        assert_eq!(evdev_from_gtk(8), None);
+        assert_eq!(evdev_from_gtk(3), None);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn gtk_reports_virtual_keys_on_windows() {
+        assert_eq!(evdev_from_gtk(0x41), Some(30)); // A
+        assert_eq!(evdev_from_gtk(0x26), Some(103)); // Up
     }
 }

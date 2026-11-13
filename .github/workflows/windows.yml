@@ -63,7 +63,7 @@ jobs:
           cargo build --release --locked -p test-bed -p ac-remote-host
 
       - name: Test
-        run: cargo test --release --locked -p ac-remote -p ac-remote-host -p ac-input
+        run: cargo test --release --locked --no-fail-fast -p ac-remote -p ac-remote-host -p ac-input
 
       - name: Bundle
         run: |
