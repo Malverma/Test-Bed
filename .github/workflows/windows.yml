@@ -51,7 +51,16 @@ jobs:
           key: windows-clang64-${{ hashFiles('Cargo.lock') }}
 
       - name: Build
-        run: cargo build --release --locked -p test-bed -p ac-remote-host
+        run: |
+          set -euo pipefail
+          # bindgen copies clang's AMX tile type into FFmpeg's bindings, and
+          # Rust rejects it; FFmpeg doesn't use AMX, so skip those headers by
+          # defining their include guards.
+          guards=$(grep -ho '^#ifndef __AMX[A-Za-z0-9_]*_H\b' /clang64/lib/clang/*/include/amx*.h | sed 's/^#ifndef /-D/' | sort -u | tr '\n' ' ')
+          [ -n "$guards" ] || { echo "no AMX headers found"; exit 1; }
+          export BINDGEN_EXTRA_CLANG_ARGS="$guards"
+          echo "BINDGEN_EXTRA_CLANG_ARGS=$guards" >> "$GITHUB_ENV"
+          cargo build --release --locked -p test-bed -p ac-remote-host
 
       - name: Test
         run: cargo test --release --locked -p ac-remote -p ac-remote-host -p ac-input
