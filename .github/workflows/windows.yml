@@ -1,6 +1,7 @@
 # Test Bed for Windows 11: the PC tab (control other PCs, share this one)
-# built with MSYS2's CLANG64 toolchain, zipped with the GTK runtime it needs.
-# A `v*` tag attaches the zip to that release; any run keeps it as an artifact.
+# built with MSYS2's CLANG64 toolchain, bundled with the GTK runtime it needs,
+# as an installer (TestBed-Setup-*.exe) and a zip. A `v*` tag attaches both
+# to that release; any run keeps them as an artifact.
 name: Windows
 
 on:
@@ -79,18 +80,34 @@ jobs:
           other networks" and send the invite code to the other computer.
           EOF
           version="${GITHUB_REF_NAME#v}"
-          [ "$GITHUB_REF_TYPE" = tag ] || version="$(git rev-parse --short HEAD)"
+          [ "$GITHUB_REF_TYPE" = tag ] || version="dev-$(git rev-parse --short HEAD)"
           (cd dist && zip -qr "../TestBed-windows-x64-$version.zip" TestBed)
           echo "ZIP=TestBed-windows-x64-$version.zip" >> "$GITHUB_ENV"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Installer
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          $iscc = Get-ChildItem "${env:ProgramFiles(x86)}", "$env:ProgramFiles" -Filter ISCC.exe -Recurse -Depth 2 -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $iscc) { throw "Inno Setup's ISCC.exe not found" }
+          & $iscc.FullName /Qp "/DAppVersion=$env:VERSION" "/DSourceDir=$PWD\dist\TestBed" "/DOutputDir=$PWD" packaging\windows\test-bed.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed ($LASTEXITCODE)" }
+          "SETUP=TestBed-Setup-$env:VERSION.exe" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
 
       - uses: actions/upload-artifact@v4
         with:
           name: TestBed-windows-x64
-          path: ${{ env.ZIP }}
+          path: |
+            ${{ env.SETUP }}
+            ${{ env.ZIP }}
 
       - name: Attach to release
         if: github.ref_type == 'tag'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$GITHUB_REF_NAME" "$ZIP" --clobber || gh release create "$GITHUB_REF_NAME" "$ZIP" --title "$GITHUB_REF_NAME" --notes "Windows build"
+        run: |
+          notes="Windows 11: download TestBed-Setup-$VERSION.exe and run it (no administrator rights needed). The zip is the same program without an installer."
+          gh release upload "$GITHUB_REF_NAME" "$SETUP" "$ZIP" --clobber \
+            || gh release create "$GITHUB_REF_NAME" "$SETUP" "$ZIP" --title "Test Bed $VERSION" --notes "$notes"
