@@ -11,6 +11,7 @@ pub mod capture;
 #[path = "capture_windows.rs"]
 pub mod capture;
 pub mod control;
+pub mod drop_folder;
 pub mod encoder;
 pub mod input;
 pub mod monitors;

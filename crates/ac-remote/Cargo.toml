@@ -11,6 +11,7 @@ repository.workspace = true
 [dependencies]
 anyhow.workspace = true
 tokio = { workspace = true, features = ["signal"] }
+directories.workspace = true
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring", "log"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "logging"] }
 rcgen = "0.14"

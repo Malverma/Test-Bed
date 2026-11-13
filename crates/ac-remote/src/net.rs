@@ -257,6 +257,14 @@ impl RecvStream {
         }
     }
 
+    /// Reads what has arrived, up to `buf.len()`; `None` at the end of the stream.
+    pub async fn read(&mut self, buf: &mut [u8]) -> Result<Option<usize>> {
+        Ok(match self {
+            RecvStream::Lan(r) => r.read(buf).await?,
+            RecvStream::Internet(r) => r.read(buf).await?,
+        })
+    }
+
     pub async fn read_exact(&mut self, buf: &mut [u8]) -> Result<()> {
         if !self.read_exact_or_end(buf).await? && !buf.is_empty() {
             return Err(anyhow!("stream ended early"));

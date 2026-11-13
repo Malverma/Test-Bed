@@ -86,6 +86,8 @@ struct State {
     fullscreen: bool,
     /// Switching sides, since.
     switching: Option<Instant>,
+    /// Files handed to the connection and not yet saved or failed.
+    files_pending: u32,
 }
 
 pub struct Viewer {
@@ -104,6 +106,8 @@ pub struct Viewer {
     stats: gtk::Label,
     fullscreen_button: gtk::Button,
     switch_button: gtk::Button,
+    send_button: gtk::Button,
+    transfer: gtk::Label,
     state: RefCell<State>,
     keys: RefCell<Option<gtk::EventControllerKey>>,
     window_active: RefCell<Option<glib::SignalHandlerId>>,
@@ -197,6 +201,12 @@ impl Viewer {
             // Switching sides works on the local network only (spec3 §6).
             .visible(!host.internet)
             .build();
+        let send_button = gtk::Button::builder()
+            .child(&adw::ButtonContent::builder().icon_name("document-send-symbolic").label("Send file").build())
+            .tooltip_text(format!("Send files to the Downloads folder on {}. You can also drop files on its screen.", host.name))
+            .sensitive(false)
+            .build();
+        let transfer = gtk::Label::builder().visible(false).css_classes(["dim-label", "numeric"]).build();
         let mute_button = gtk::ToggleButton::builder()
             .icon_name("audio-volume-muted-symbolic")
             .tooltip_text("Sound muted: click to hear this PC")
@@ -214,6 +224,8 @@ impl Viewer {
         bar.append(&title);
         bar.append(&monitors_box);
         bar.append(&stats);
+        bar.append(&transfer);
+        bar.append(&send_button);
         bar.append(&switch_button);
         bar.append(&mute_button);
         bar.append(&fullscreen_button);
@@ -237,6 +249,8 @@ impl Viewer {
             stats,
             fullscreen_button,
             switch_button,
+            send_button,
+            transfer,
             state: RefCell::new(State { forwarding: true, ..Default::default() }),
             keys: RefCell::default(),
             window_active: RefCell::default(),
@@ -261,6 +275,15 @@ impl Viewer {
                 }
             });
         }
+        {
+            let weak = Rc::downgrade(&v);
+            v.send_button.connect_clicked(move |_| {
+                if let Some(v) = weak.upgrade() {
+                    v.choose_files();
+                }
+            });
+        }
+        v.attach_drop();
         {
             let weak = Rc::downgrade(&v);
             v.fullscreen_button.connect_clicked(move |_| {
@@ -377,6 +400,7 @@ impl Viewer {
                 }
                 self.show_status("", "");
                 self.switch_button.set_sensitive(true);
+                self.send_button.set_sensitive(true);
                 self.rebuild_monitors();
                 self.update_grab();
             }
@@ -422,6 +446,21 @@ impl Viewer {
                 self.show_status("Can't connect", &msg);
             }
             NetEvent::SwitchReady { client_name, client_fingerprint } => self.switch_ready(client_name, client_fingerprint),
+            NetEvent::FileProgress { name, sent, total } => {
+                let pct = (sent * 100).checked_div(total).unwrap_or(100);
+                let waiting = self.state.borrow().files_pending.saturating_sub(1);
+                let more = if waiting > 0 { format!(" (+{waiting})") } else { String::new() };
+                self.transfer.set_label(&format!("Sending {name} · {pct}%{more}"));
+                self.transfer.set_visible(true);
+            }
+            NetEvent::FileSent { name, path } => {
+                self.file_done();
+                self.tab.viewer_message(&format!("Sent {name} to {}: {path}", self.host.name));
+            }
+            NetEvent::FileFailed { name, error } => {
+                self.file_done();
+                self.tab.viewer_message(&format!("Couldn't send {name}: {error}"));
+            }
             NetEvent::SwitchRefused(text) => {
                 if self.state.borrow().switching.is_some() {
                     self.switch_failed(&text);
@@ -433,6 +472,7 @@ impl Viewer {
         }
         if !self.state.borrow().connected {
             self.switch_button.set_sensitive(false);
+            self.send_button.set_sensitive(false);
         }
     }
 
@@ -501,6 +541,69 @@ impl Viewer {
     }
 
     /// A short message over the picture.
+    /// Queues files for the PC; `drop_at` is where on its screen they were dropped.
+    fn send_files(&self, paths: Vec<std::path::PathBuf>, drop_at: Option<(f32, f32)>) {
+        if !self.state.borrow().connected {
+            self.tab.viewer_message(&format!("Connect to {} to send files", self.host.name));
+            return;
+        }
+        for path in paths {
+            if path.is_dir() {
+                let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                self.tab.viewer_message(&format!("{name} is a folder: only files can be sent"));
+                continue;
+            }
+            self.state.borrow_mut().files_pending += 1;
+            let _ = self.net.tx.send(Outgoing::SendFile { path, drop_at });
+        }
+        if self.state.borrow().files_pending > 0 && !self.transfer.is_visible() {
+            self.transfer.set_label("Sending…");
+            self.transfer.set_visible(true);
+        }
+    }
+
+    fn file_done(&self) {
+        let left = {
+            let mut s = self.state.borrow_mut();
+            s.files_pending = s.files_pending.saturating_sub(1);
+            s.files_pending
+        };
+        if left == 0 {
+            self.transfer.set_visible(false);
+        }
+    }
+
+    fn choose_files(self: &Rc<Self>) {
+        let dialog = gtk::FileDialog::builder().title(format!("Send files to {}", self.host.name)).accept_label("Send").modal(true).build();
+        let weak = Rc::downgrade(self);
+        dialog.open_multiple(Some(&self.window), None::<&gtk::gio::Cancellable>, move |res| {
+            let (Some(v), Ok(list)) = (weak.upgrade(), res) else { return };
+            let paths: Vec<_> = (0..list.n_items())
+                .filter_map(|i| list.item(i).and_downcast::<gtk::gio::File>())
+                .filter_map(|f| f.path())
+                .collect();
+            v.send_files(paths, None);
+        });
+    }
+
+    /// Files dropped on the PC's screen: the PC saves them in the folder
+    /// open under the drop (Windows Explorer), or in Downloads.
+    fn attach_drop(self: &Rc<Self>) {
+        let target = gtk::DropTarget::new(gdk::FileList::static_type(), gdk::DragAction::COPY);
+        let weak = Rc::downgrade(self);
+        target.connect_drop(move |_, value, x, y| {
+            let (Some(v), Ok(list)) = (weak.upgrade(), value.get::<gdk::FileList>()) else { return false };
+            let paths: Vec<_> = list.files().iter().filter_map(|f| f.path()).collect();
+            if paths.is_empty() {
+                return false;
+            }
+            let at = v.to_stream(x, y);
+            v.send_files(paths, at);
+            true
+        });
+        self.picture.add_controller(target);
+    }
+
     fn flash(&self, text: &str) {
         if !self.overlay_box.is_visible() {
             self.show_status(text, "");

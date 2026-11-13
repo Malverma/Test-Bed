@@ -92,6 +92,29 @@ pub async fn read_msg<T: DeserializeOwned>(r: &mut crate::net::RecvStream) -> Re
     Ok(Some(postcard::from_bytes(&body)?))
 }
 
+// ---- Files -------------------------------------------------------------------
+
+/// A file sent to the shared PC, on its own stream of the session: the
+/// viewer opens a stream and writes a `FileOffer`; the host answers `Ready`
+/// (or `Refused`), the viewer writes the file's bytes and finishes the
+/// stream, and the host answers `Saved` once the file is complete.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct FileOffer {
+    pub name: String,
+    pub size: u64,
+    /// Where it was dropped on the streamed monitor (0..1), if it was: the
+    /// host saves it to the folder open there when it can tell.
+    pub drop_at: Option<(f32, f32)>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum FileReply {
+    /// Send the bytes; `folder` is where they'll go.
+    Ready { folder: String },
+    Saved { path: String },
+    Refused { text: String },
+}
+
 // ---- Datagrams --------------------------------------------------------------
 
 pub const DG_VIDEO: u8 = 0;

@@ -78,6 +78,8 @@ pub struct Host {
     pub pair_events: broadcast::Sender<PairEvent>,
     session: Mutex<Option<Session>>,
     injector: Mutex<Option<Injector>>,
+    /// The streamed monitor's place on the desktop, for files dropped on it.
+    drop_target: Mutex<Option<crate::input::Target>>,
     next_id: AtomicU64,
     endpoint: Mutex<Option<quinn::Endpoint>>,
     internet: Mutex<Option<iroh::Endpoint>>,
@@ -108,6 +110,7 @@ impl Host {
             pair_events: broadcast::channel(16).0,
             session: Mutex::new(None),
             injector: Mutex::new(None),
+            drop_target: Mutex::new(None),
             next_id: AtomicU64::new(1),
             endpoint: Mutex::new(None),
             internet: Mutex::new(None),
@@ -452,6 +455,7 @@ impl Host {
                             if let Some(i) = host.injector.lock().unwrap().as_mut() {
                                 i.set_target(target);
                             }
+                            *host.drop_target.lock().unwrap() = Some(target);
                             if let Some(s) = host.session.lock().unwrap().as_mut().filter(|s| s.id == id) {
                                 s.stream = Some((monitor.clone(), width, height, fps));
                             }
@@ -608,7 +612,33 @@ impl Host {
             }
         };
 
+        // Files from the client, each on a stream of its own.
+        let files = {
+            let conn = conn.clone();
+            let host = self.clone();
+            async move {
+                loop {
+                    let (send, recv) = conn.accept_bi().await?;
+                    let target = *host.drop_target.lock().unwrap();
+                    tokio::spawn(async move {
+                        match ac_remote::files::receive(send, recv, move |at| crate::drop_folder::folder_for(at, target)).await {
+                            Ok(path) => {
+                                tracing::info!("received {}", path.display());
+                                let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                                let folder = path.parent().map(|p| p.display().to_string()).unwrap_or_default();
+                                notify(&format!("Received {name} in {folder}"));
+                            }
+                            Err(e) => tracing::warn!("receiving a file: {e:#}"),
+                        }
+                    });
+                }
+                #[allow(unreachable_code)]
+                anyhow::Ok(())
+            }
+        };
+
         let res = tokio::select! {
+            r = files => r,
             r = writer => r,
             r = video => r,
             r = audio => r,

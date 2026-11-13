@@ -6,6 +6,7 @@
 pub mod client;
 pub mod clock;
 pub mod config;
+pub mod files;
 pub mod connection;
 pub mod discovery;
 pub mod hostctl;

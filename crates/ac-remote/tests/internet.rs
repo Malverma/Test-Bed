@@ -115,3 +115,52 @@ async fn meets_through_public_relay() {
     assert_eq!(saved.hosts[0].fingerprint, host.id().to_string());
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// A file goes over its own stream and lands under a free name; a second
+/// copy gets a number rather than replacing the first.
+#[tokio::test]
+async fn sends_files() {
+    let (_host, _client, h, c) = connect(ALPN_SESSION).await;
+    let dir = std::env::temp_dir().join(format!("tb-send-{}", std::process::id()));
+    let (src, dest) = (dir.join("src"), dir.join("dest"));
+    std::fs::create_dir_all(&src).unwrap();
+    let data: Vec<u8> = (0..1_000_000u32).map(|i| (i % 251) as u8).collect();
+    let file = src.join("big report.bin");
+    std::fs::write(&file, &data).unwrap();
+
+    for expect in ["big report.bin", "big report (2).bin"] {
+        let receiver = {
+            let (h, dest) = (h.clone(), dest.clone());
+            tokio::spawn(async move {
+                let (s, r) = h.accept_bi().await.unwrap();
+                ac_remote::files::receive(s, r, move |at| {
+                    assert_eq!(at, Some((0.25, 0.5)));
+                    dest
+                })
+                .await
+                .unwrap()
+            })
+        };
+        let mut last = (0, 0);
+        let saved = ac_remote::files::send(&c, &file, Some((0.25, 0.5)), |sent, total| last = (sent, total)).await.unwrap();
+        let got = receiver.await.unwrap();
+        assert_eq!(last, (data.len() as u64, data.len() as u64));
+        assert_eq!(got, dest.join(expect));
+        assert_eq!(saved, got.display().to_string());
+        assert_eq!(std::fs::read(&got).unwrap(), data);
+    }
+    // No partial files left behind.
+    assert_eq!(std::fs::read_dir(&dest).unwrap().count(), 2);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A host that never answers (an older Test Bed) fails the send instead of hanging.
+#[tokio::test(start_paused = true)]
+async fn silent_host_times_out() {
+    let (_host, _client, _h, c) = connect(ALPN_SESSION).await;
+    let file = std::env::temp_dir().join(format!("tb-silent-{}", std::process::id()));
+    std::fs::write(&file, b"hello").unwrap();
+    let err = ac_remote::files::send(&c, &file, None, |_, _| {}).await.unwrap_err();
+    assert!(err.to_string().contains("update Test Bed"), "{err}");
+    std::fs::remove_file(&file).unwrap();
+}

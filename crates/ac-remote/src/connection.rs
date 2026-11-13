@@ -45,6 +45,11 @@ pub enum NetEvent {
     /// The host agreed to switch sides; this is the viewer it will connect back with.
     SwitchReady { client_name: String, client_fingerprint: String },
     SwitchRefused(String),
+    /// A file going to the host: `sent` of `total` bytes so far.
+    FileProgress { name: String, sent: u64, total: u64 },
+    /// The host saved it at `path` (a path on the host).
+    FileSent { name: String, path: String },
+    FileFailed { name: String, error: String },
     /// Unrecoverable: the viewer should show it and stop.
     Fatal(String),
 }
@@ -53,7 +58,13 @@ pub enum NetEvent {
 pub enum Outgoing {
     Msg(ClientMsg),
     Motion(Motion),
+    /// Send a file; `drop_at` is where on the stream it was dropped (0..1).
+    SendFile { path: std::path::PathBuf, drop_at: Option<(f32, f32)> },
     Quit,
+}
+
+fn file_name(path: &std::path::Path) -> String {
+    path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string())
 }
 
 pub struct NetHandle {
@@ -126,6 +137,9 @@ async fn run(
                 m = rx.recv() => match m {
                     None | Some(Outgoing::Quit) => { endpoint.close().await; return; }
                     Some(Outgoing::Msg(ClientMsg::UpdateSettings(s))) => settings = s,
+                    Some(Outgoing::SendFile { path, .. }) => {
+                        events(NetEvent::FileFailed { name: file_name(&path), error: "not connected".into() });
+                    }
                     Some(_) => {}
                 }
             }
@@ -335,6 +349,31 @@ async fn run_session(
         }
     };
 
+    // Files, one at a time, each on its own stream beside the session.
+    let (file_tx, mut file_rx) = mpsc::unbounded_channel::<(std::path::PathBuf, Option<(f32, f32)>)>();
+    let files = {
+        let conn = conn.clone();
+        let events = events.clone();
+        async move {
+            while let Some((path, drop_at)) = file_rx.recv().await {
+                let name = file_name(&path);
+                let mut shown = Instant::now() - Duration::from_secs(1);
+                let progress = |sent: u64, total: u64| {
+                    if sent == total || shown.elapsed() >= Duration::from_millis(100) {
+                        shown = Instant::now();
+                        events(NetEvent::FileProgress { name: name.clone(), sent, total });
+                    }
+                };
+                match crate::files::send(&conn, &path, drop_at, progress).await {
+                    Ok(path) => events(NetEvent::FileSent { name, path }),
+                    Err(e) => events(NetEvent::FileFailed { name, error: format!("{e:#}") }),
+                }
+            }
+            // A failed file never ends the session.
+            std::future::pending::<anyhow::Result<Ended>>().await
+        }
+    };
+
     // Viewer → host input, plus periodic pings.
     let input = {
         let conn = conn.clone();
@@ -361,6 +400,9 @@ async fn run_session(
                             // Unreliable; a lost motion is superseded by the next one.
                             let _ = conn.send_datagram(m.encode().into());
                         }
+                        Some(Outgoing::SendFile { path, drop_at }) => {
+                            let _ = file_tx.send((path, drop_at));
+                        }
                     }
                 }
             }
@@ -371,5 +413,6 @@ async fn run_session(
         r = control => r,
         r = video => r,
         r = input => r,
+        r = files => r,
     }
 }

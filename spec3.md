@@ -126,6 +126,7 @@ No new inbound rule.
 | **I3** | Field test: laptop on a phone hotspot pairs with and controls this PC. | Next |
 | **I4** | Path and round trip in the viewer; relay in Preferences; lower default bitrate over the internet. | |
 | **W1–W5** | Windows 11 build (§9). | |
+| **F1** | Sending files: **Send file** in the viewer bar, or drop files on the remote screen. One stream per file inside the session (`FileOffer` → `Ready` → bytes → `Saved`), so it works on the LAN and across the internet. Saved to Downloads under a free name; a drop on a Windows Explorer window or the desktop saves there. An older host never answers and the send fails after 10 s. | Done; loopback tested, not yet tried between two PCs. |
 
 ## 8. Risks
 
