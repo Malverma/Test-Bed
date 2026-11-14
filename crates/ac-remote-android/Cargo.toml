@@ -1,0 +1,21 @@
+[package]
+name = "ac-remote-android"
+description = "The phone app's side of remote access: Test Bed's PC connection (LAN and internet) for Java, over JNI"
+version.workspace = true
+edition = "2021"
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "testbed_remote"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+ac-remote = { path = "../ac-remote" }
+anyhow.workspace = true
+jni = "0.21"
+serde_json = "1"
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

@@ -11,7 +11,7 @@ use ac_remote::config::{ClientConfig, HostConfig};
 use ac_remote::identity::{Identity, Role};
 use ac_remote::net::{self, Conn};
 use ac_remote::pairing::{self, HostPairOutcome, PairingWindow};
-use ac_remote::proto::{read_msg, write_msg, ClientMsg, HostMsg, Motion};
+use ac_remote::proto::{read_msg, write_msg, ClientMsg, ClipMsg, HostMsg, Motion};
 use ac_remote::transport::{self, ALPN_PAIR, ALPN_PROBE, ALPN_SESSION};
 use ac_remote::trust::{AuthorizedClient, AuthorizedClients, KnownHost, KnownHosts};
 use ac_remote::video::{fragment, FrameMeta};
@@ -121,6 +121,7 @@ impl Host {
     /// to pick up new devices, which would otherwise eat the first keystrokes.
     pub fn init_input(&self) -> Result<()> {
         *self.injector.lock().unwrap() = Some(Injector::new()?);
+        crate::local_input::start();
         Ok(())
     }
 
@@ -521,7 +522,7 @@ impl Host {
             async move {
                 loop {
                     let d = conn.read_datagram().await?;
-                    if let Some(m) = Motion::decode(&d) {
+                    if let Some(m) = Motion::decode(&d).filter(|_| !crate::local_input::active()) {
                         if let Some(i) = host.injector.lock().unwrap().as_mut() {
                             let r = match m {
                                 Motion::Abs { seq, x, y } => i.motion_abs(seq, x, y),
@@ -538,6 +539,8 @@ impl Host {
             }
         };
 
+        let local_tx = out_tx.clone();
+        let clip_tx = out_tx.clone();
         let control = {
             let host = self.clone();
             let ctrl = ctrl.clone();
@@ -559,7 +562,11 @@ impl Host {
                             continue;
                         }
                     };
+                    // Someone at this PC comes first: drop the remote's input.
                     let inject = |f: &mut dyn FnMut(&mut Injector) -> Result<()>| {
+                        if crate::local_input::active() {
+                            return;
+                        }
                         if let Some(i) = host.injector.lock().unwrap().as_mut() {
                             if let Err(e) = f(i) {
                                 tracing::warn!("input injection: {e}");
@@ -570,10 +577,11 @@ impl Host {
                         ClientMsg::Key { code, pressed } => inject(&mut |i| i.key(code, pressed)),
                         ClientMsg::Button { code, pressed } => inject(&mut |i| i.button(code, pressed)),
                         ClientMsg::Scroll { v120_x, v120_y } => inject(&mut |i| i.scroll(v120_x, v120_y)),
-                        ClientMsg::ReleaseAll => inject(&mut |i| {
-                            i.release_all();
-                            Ok(())
-                        }),
+                        ClientMsg::ReleaseAll => {
+                            if let Some(i) = host.injector.lock().unwrap().as_mut() {
+                                i.release_all();
+                            }
+                        }
                         ClientMsg::RequestKeyframe => ctrl.keyframe.store(true, Ordering::Relaxed),
                         ClientMsg::UpdateSettings(s) => *ctrl.settings.lock().unwrap() = Some(s),
                         ClientMsg::Ping { t_client_us } => {
@@ -637,7 +645,90 @@ impl Host {
             }
         };
 
+        // When someone starts using this PC, let go of what the remote holds
+        // and tell it; tell it again once they stop.
+        let local = {
+            let host = self.clone();
+            let out_tx = local_tx;
+            async move {
+                let mut paused = false;
+                let mut tick = tokio::time::interval(std::time::Duration::from_millis(200));
+                loop {
+                    tick.tick().await;
+                    let active = crate::local_input::active();
+                    if active == paused {
+                        continue;
+                    }
+                    paused = active;
+                    let text = if active {
+                        if let Some(i) = host.injector.lock().unwrap().as_mut() {
+                            i.release_all();
+                        }
+                        format!("Someone is using {}: your keyboard and mouse are paused until they stop", host.name)
+                    } else {
+                        format!("You have {} back", host.name)
+                    };
+                    tracing::info!("{text}");
+                    let _ = out_tx.send(HostMsg::Notice { text });
+                }
+                #[allow(unreachable_code)]
+                anyhow::Ok(())
+            }
+        };
+
+        // The clipboard, for a viewer that subscribes (the phone app).
+        let clipboard = {
+            let conn = conn.clone();
+            let out_tx = clip_tx;
+            async move {
+                let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+                let mut watch = None;
+                // The last text either way, so nothing echoes back.
+                let mut last: Option<String> = None;
+                loop {
+                    tokio::select! {
+                        r = conn.accept_uni() => match ac_remote::proto::read_clip(r?).await {
+                            Ok(Some(ClipMsg::Subscribe)) if watch.is_none() => match crate::clipboard::watch(tx.clone()) {
+                                Ok(w) => {
+                                    tracing::info!("sharing the clipboard with the viewer");
+                                    watch = Some(w);
+                                }
+                                Err(e) => {
+                                    tracing::warn!("watching the clipboard: {e:#}");
+                                    let _ = out_tx.send(HostMsg::Notice { text: format!("The clipboard isn't shared: {e:#}") });
+                                }
+                            },
+                            Ok(Some(ClipMsg::Text { text })) => {
+                                tracing::info!("clipboard from the viewer ({} characters)", text.chars().count());
+                                last = Some(text.clone());
+                                let r = tokio::task::spawn_blocking(move || crate::clipboard::set(&text)).await;
+                                if let Err(e) = r.map_err(anyhow::Error::from).and_then(|r| r) {
+                                    tracing::warn!("setting the clipboard: {e:#}");
+                                }
+                            }
+                            Ok(_) => {}
+                            Err(e) => tracing::debug!("clipboard from the viewer: {e:#}"),
+                        },
+                        Some(text) = rx.recv() => {
+                            if last.as_deref() != Some(text.as_str()) {
+                                last = Some(text.clone());
+                                tracing::info!("clipboard to the viewer ({} characters)", text.chars().count());
+                                let msg = ClipMsg::Text { text: ac_remote::proto::clip_text(&text) };
+                                if let Err(e) = ac_remote::proto::send_clip(&conn, &msg).await {
+                                    tracing::debug!("clipboard to the viewer: {e:#}");
+                                }
+                            }
+                        }
+                    }
+                }
+                #[allow(unreachable_code)]
+                anyhow::Ok(())
+            }
+        };
+
         let res = tokio::select! {
+            r = clipboard => r,
+            r = local => r,
             r = files => r,
             r = writer => r,
             r = video => r,

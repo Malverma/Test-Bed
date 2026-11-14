@@ -15,6 +15,7 @@ pub mod internet;
 pub mod ipc;
 pub mod net;
 pub mod pairing;
+#[cfg(not(target_os = "android"))]
 pub mod playback;
 pub mod paths;
 pub mod proto;

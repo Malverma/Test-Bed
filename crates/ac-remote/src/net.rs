@@ -80,6 +80,20 @@ impl Conn {
         })
     }
 
+    pub async fn open_uni(&self) -> Result<SendStream> {
+        Ok(match self {
+            Conn::Lan(c) => SendStream::Lan(c.open_uni().await?),
+            Conn::Internet(c) => SendStream::Internet(c.open_uni().await?),
+        })
+    }
+
+    pub async fn accept_uni(&self) -> Result<RecvStream> {
+        Ok(match self {
+            Conn::Lan(c) => RecvStream::Lan(c.accept_uni().await?),
+            Conn::Internet(c) => RecvStream::Internet(c.accept_uni().await?),
+        })
+    }
+
     pub async fn read_datagram(&self) -> Result<Bytes> {
         Ok(match self {
             Conn::Lan(c) => c.read_datagram().await?,

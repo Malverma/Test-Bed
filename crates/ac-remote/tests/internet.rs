@@ -164,3 +164,18 @@ async fn silent_host_times_out() {
     assert!(err.to_string().contains("update Test Bed"), "{err}");
     std::fs::remove_file(&file).unwrap();
 }
+
+/// Clipboard text goes both ways on one-way streams, beside a file stream
+/// (which a 2.2 host's `accept_bi` loop would see) without mixing them up.
+#[tokio::test]
+async fn clipboard_both_ways() {
+    use ac_remote::proto::{read_clip, send_clip, ClipMsg};
+    let (_host, _client, h, c) = connect(ALPN_SESSION).await;
+    send_clip(&c, &ClipMsg::Subscribe).await.unwrap();
+    assert_eq!(read_clip(h.accept_uni().await.unwrap()).await.unwrap(), Some(ClipMsg::Subscribe));
+    let text = "héllo · 你好\nline two".to_string();
+    send_clip(&h, &ClipMsg::Text { text: text.clone() }).await.unwrap();
+    assert_eq!(read_clip(c.accept_uni().await.unwrap()).await.unwrap(), Some(ClipMsg::Text { text: text.clone() }));
+    send_clip(&c, &ClipMsg::Text { text: "back".into() }).await.unwrap();
+    assert_eq!(read_clip(h.accept_uni().await.unwrap()).await.unwrap(), Some(ClipMsg::Text { text: "back".into() }));
+}

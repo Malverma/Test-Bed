@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "ac-adb"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "adb-mock",
  "thiserror 2.0.21",
@@ -14,7 +14,7 @@ dependencies = [
 
 [[package]]
 name = "ac-audio"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "libc",
  "thiserror 2.0.21",
@@ -23,7 +23,7 @@ dependencies = [
 
 [[package]]
 name = "ac-config"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "ac-core",
  "chrono",
@@ -36,14 +36,14 @@ dependencies = [
 
 [[package]]
 name = "ac-core"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "ac-device"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "ac-adb",
  "ac-audio",
@@ -70,7 +70,7 @@ dependencies = [
 
 [[package]]
 name = "ac-direct"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "hmac",
  "p256",
@@ -86,7 +86,7 @@ dependencies = [
 
 [[package]]
 name = "ac-discovery"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "futures-util",
  "serde",
@@ -98,11 +98,11 @@ dependencies = [
 
 [[package]]
 name = "ac-input"
-version = "2.2.0"
+version = "2.3.0"
 
 [[package]]
 name = "ac-mcp"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "base64 0.22.1",
  "image",
@@ -111,7 +111,7 @@ dependencies = [
 
 [[package]]
 name = "ac-media"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "ac-scrcpy",
  "ffmpeg-sys-next",
@@ -121,7 +121,7 @@ dependencies = [
 
 [[package]]
 name = "ac-monitor"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "anyhow",
  "ffmpeg-next",
@@ -138,7 +138,7 @@ dependencies = [
 
 [[package]]
 name = "ac-remote"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -164,8 +164,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "ac-remote-android"
+version = "2.3.0"
+dependencies = [
+ "ac-remote",
+ "anyhow",
+ "jni 0.21.1",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "ac-remote-host"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "ac-remote",
  "anyhow",
@@ -193,7 +206,7 @@ dependencies = [
 
 [[package]]
 name = "ac-scrcpy"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "ac-adb",
  "thiserror 2.0.21",
@@ -204,14 +217,14 @@ dependencies = [
 
 [[package]]
 name = "ac-transfer"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "miniz_oxide 0.8.9",
 ]
 
 [[package]]
 name = "adb-mock"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "tokio",
 ]
@@ -4833,7 +4846,7 @@ dependencies = [
 
 [[package]]
 name = "test-bed"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "ac-config",
  "ac-core",

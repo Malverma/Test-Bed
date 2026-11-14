@@ -66,7 +66,36 @@ pub fn create(name: &str, rule: &str) -> Result<()> {
     if !exists(name) {
         expect_ok(&["output", "create", "headless", name])?;
     }
-    expect_ok(&["keyword", "monitor", rule])
+    set_mode(rule)
+}
+
+/// Applies a monitor rule. Hyprland 0.56+ with a Lua config refuses
+/// `keyword` ("can't work with non-legacy parsers. Use eval"): there the same
+/// rule goes through `hl.monitor` instead.
+fn set_mode(rule: &str) -> Result<()> {
+    let reply = hyprctl(&["keyword", "monitor", rule])?;
+    if reply == "ok" {
+        return Ok(());
+    }
+    if !reply.contains("eval") {
+        bail!("hyprctl keyword monitor {rule}: {reply}");
+    }
+    let lua = lua_monitor(rule).with_context(|| format!("monitor rule {rule:?}"))?;
+    expect_ok(&["eval", &lua])
+}
+
+/// `name,mode,position,scale` as Hyprland's Lua `hl.monitor{…}` call.
+pub fn lua_monitor(rule: &str) -> Result<String> {
+    let parts: Vec<&str> = rule.split(',').map(str::trim).collect();
+    let [name, mode, position, scale] = parts[..] else { bail!("expected name,mode,position,scale") };
+    let scale: f64 = scale.parse().context("scale")?;
+    let quote = |s: &str| format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""));
+    Ok(format!(
+        "hl.monitor({{ output = {}, mode = {}, position = {}, scale = {scale} }})",
+        quote(name),
+        quote(mode),
+        quote(position)
+    ))
 }
 
 pub fn remove(name: &str) -> Result<()> {
@@ -120,6 +149,16 @@ mod tests {
     #[test]
     fn builds_the_rule() {
         assert_eq!(monitor_rule("TBM-1", 1920, 864, 60, "auto-right", 1.5), "TBM-1,1920x864@60,auto-right,1.5");
+    }
+
+    #[test]
+    fn builds_the_lua_rule() {
+        assert_eq!(
+            lua_monitor("TBM-1,1920x864@60,auto-right,1.5").unwrap(),
+            r#"hl.monitor({ output = "TBM-1", mode = "1920x864@60", position = "auto-right", scale = 1.5 })"#
+        );
+        assert_eq!(lua_monitor("TBM-2,960x480@60,1920x0,1").unwrap(), r#"hl.monitor({ output = "TBM-2", mode = "960x480@60", position = "1920x0", scale = 1 })"#);
+        assert!(lua_monitor("TBM-1,1920x864@60").is_err());
     }
 
     #[test]

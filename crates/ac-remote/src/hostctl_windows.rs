@@ -104,6 +104,10 @@ pub fn uinput_writable() -> bool {
     true
 }
 
+pub fn input_readable() -> bool {
+    true
+}
+
 pub fn ufw_active() -> bool {
     false
 }

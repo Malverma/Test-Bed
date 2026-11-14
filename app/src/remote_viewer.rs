@@ -421,6 +421,8 @@ impl Viewer {
                 }
             }
             NetEvent::FramesDropped(_) => {}
+            // Only the phone app subscribes to the host's clipboard.
+            NetEvent::Clipboard(_) => {}
             NetEvent::Notice(text) => self.flash(&text),
             NetEvent::Disconnected { reason } => {
                 self.switch_failed(&format!("{} needs Test Bed to switch sides", self.host.name));

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Builds build/wireless-debugging-keeper.apk with the plain SDK tools (no Gradle).
+# Builds build/test-bed.apk with the plain SDK tools (no Gradle).
 # Needs: a JDK (17+), and in the Android SDK: build-tools 35 and platforms;android-35.
+# The remote-PC library comes from native.sh (run here if it hasn't been).
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -20,14 +21,16 @@ if [[ ! -f $KEYSTORE ]]; then
         -dname "CN=Android Debug,O=Android,C=US" -keyalg RSA -keysize 2048 -validity 10000 >/dev/null
 fi
 
+[[ -d build-native/lib ]] || ./native.sh
 rm -rf build && mkdir -p build/classes build/dex
 "$BT/aapt2" compile --dir res -o build/res.zip
 "$BT/aapt2" link -o build/unsigned.apk -I "$JAR" --manifest AndroidManifest.xml build/res.zip
 javac --release 11 -classpath "$JAR" -d build/classes $(find src -name '*.java')
 "$BT/d8" --min-api 23 --lib "$JAR" --output build/dex $(find build/classes -name '*.class')
 (cd build/dex && zip -q -j ../unsigned.apk classes.dex)
+(cd build-native && zip -q -r ../build/unsigned.apk lib)
 "$BT/zipalign" -f -p 4 build/unsigned.apk build/aligned.apk
 "$BT/apksigner" sign --ks "$KEYSTORE" --ks-pass pass:android --key-pass pass:android \
-    --out build/wireless-debugging-keeper.apk build/aligned.apk
+    --out build/test-bed.apk build/aligned.apk
 rm -f build/unsigned.apk build/aligned.apk build/res.zip build/*.idsig
-echo "built $(pwd)/build/wireless-debugging-keeper.apk"
+echo "built $(pwd)/build/test-bed.apk"

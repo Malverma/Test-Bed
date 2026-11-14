@@ -115,6 +115,45 @@ pub enum FileReply {
     Refused { text: String },
 }
 
+/// Clipboard text, each message on a one-way stream of its own (Test Bed
+/// 2.3+). A peer that doesn't know them never accepts those streams, so
+/// nothing breaks; the host only sends once the viewer has subscribed.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub enum ClipMsg {
+    /// Viewer → host: send me the clipboard now and whenever it changes.
+    Subscribe,
+    /// The other side's clipboard changed to this text.
+    Text { text: String },
+}
+
+/// Clipboard text beyond this many bytes is cut (at a character boundary).
+pub const CLIP_MAX: usize = 256 * 1024;
+
+/// `text` cut to [`CLIP_MAX`] bytes.
+pub fn clip_text(text: &str) -> String {
+    let mut end = text.len().min(CLIP_MAX);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].to_string()
+}
+
+/// Sends one clipboard message on a new stream.
+pub async fn send_clip(conn: &crate::net::Conn, msg: &ClipMsg) -> Result<()> {
+    let mut s = conn.open_uni().await?;
+    write_msg(&mut s, msg).await?;
+    s.finish();
+    Ok(())
+}
+
+/// Reads the message from a stream the peer opened.
+pub async fn read_clip(mut r: crate::net::RecvStream) -> Result<Option<ClipMsg>> {
+    match tokio::time::timeout(std::time::Duration::from_secs(5), read_msg::<ClipMsg>(&mut r)).await {
+        Ok(m) => m,
+        Err(_) => bail!("clipboard message timed out"),
+    }
+}
+
 // ---- Datagrams --------------------------------------------------------------
 
 pub const DG_VIDEO: u8 = 0;
@@ -193,6 +232,15 @@ impl Motion {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn long_clipboards_are_cut_at_a_character() {
+        assert_eq!(clip_text("hi"), "hi");
+        let long = "é".repeat(CLIP_MAX);
+        let cut = clip_text(&long);
+        assert!(cut.len() <= CLIP_MAX && cut.len() >= CLIP_MAX - 1);
+        assert!(cut.chars().all(|c| c == 'é'));
+    }
 
     #[test]
     fn motion_roundtrip() {

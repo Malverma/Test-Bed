@@ -9,3 +9,4 @@
 
 # Android helper build output
 android-helper/build/
+android-helper/build-native/

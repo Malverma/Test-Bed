@@ -68,7 +68,7 @@ const LEGACY_PROBE_EVERY: Duration = Duration::from_secs(30);
 const NEARBY_GRACE: Duration = Duration::from_secs(30);
 /// The Test Bed phone app build this app ships (android-helper/dist):
 /// phones with an older one are offered the update.
-const HELPER_APK: &[u8] = include_bytes!("../../../android-helper/dist/wireless-debugging-keeper.apk");
+const HELPER_APK: &[u8] = include_bytes!("../../../android-helper/dist/test-bed.apk");
 
 /// A slot's logcat stream that ended is restarted no sooner than this.
 const LOGCAT_RETRY: Duration = Duration::from_secs(5);
@@ -1187,7 +1187,7 @@ Wireless debugging is encrypted."
     fn helper_apk(&mut self) -> Option<(PathBuf, u32)> {
         if self.helper_apk.is_none() {
             let dir = self.paths.as_ref().map_or_else(std::env::temp_dir, |p| p.state_dir.clone());
-            let path = dir.join("wireless-debugging-keeper.apk");
+            let path = dir.join("test-bed.apk");
             let fresh = std::fs::read(&path).is_ok_and(|b| b == HELPER_APK);
             if !fresh && let Err(e) = std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&path, HELPER_APK)) {
                 tracing::warn!("writing {}: {e}", path.display());

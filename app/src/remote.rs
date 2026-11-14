@@ -135,7 +135,7 @@ async fn snapshot() -> Snapshot {
         .filter_map(|(h, p)| p.online.then(|| (h.fingerprint.clone(), p.rtt_ms.unwrap_or(0.0))))
         .collect();
     let (service_enabled, needs_uinput, needs_firewall) = tokio::task::spawn_blocking(|| {
-        (hostctl::service_enabled(), !hostctl::uinput_writable(), hostctl::ufw_active() && !hostctl::firewall_opened())
+        (hostctl::service_enabled(), !hostctl::uinput_writable() || !hostctl::input_readable(), hostctl::ufw_active() && !hostctl::firewall_opened())
     })
     .await
     .unwrap_or((false, false, false));
@@ -462,7 +462,7 @@ impl RemoteTab {
         self.pair.set_sensitive(running);
         let mut needs = Vec::new();
         if s.needs_uinput {
-            needs.push("lets paired computers use the keyboard and mouse");
+            needs.push("lets paired computers use the keyboard and mouse, and you take over from them at this PC");
         }
         if s.needs_firewall {
             needs.push("opens the firewall to your home network");
@@ -646,7 +646,7 @@ impl RemoteTab {
         blocking(
             || {
                 let mut script = Vec::new();
-                if !hostctl::uinput_writable() {
+                if !hostctl::uinput_writable() || !hostctl::input_readable() {
                     hostctl::fix_uinput()?;
                     script.push("input");
                 }

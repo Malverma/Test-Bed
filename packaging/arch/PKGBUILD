@@ -1,7 +1,7 @@
 # Local build from this repository: cd packaging/arch && makepkg -si
 # Builds the last *committed* state (git+file:// source).
 pkgname=test-bed
-pkgver=2.2.0
+pkgver=2.3.0
 pkgrel=1
 pkgdesc="Mirror, control and test apps on up to five Android phones over Wi-Fi (GTK4)"
 url='https://github.com/PocketStudiosLLC/Test-Bed'
@@ -12,6 +12,7 @@ makedepends=('cargo' 'git')
 optdepends=('nss-mdns: resolve .local hostnames'
             'polkit: one-click firewall setup for sharing this PC (PC tab)'
             'libnotify: a notification when a computer connects to this PC'
+            'wl-clipboard: share this PC'\''s clipboard with phones controlling it'
             'libpulse: send this PC'\''s audio to computers controlling it (parec)'
             'pipewire-audio: play the focused phone'\''s audio (pw-cat)'
             'intel-media-driver: hardware video and monitor mode encoding on Intel GPUs (Broadwell and newer)'
@@ -56,6 +57,6 @@ package() {
   install -Dm755 target/release/test-bed-share "$pkgdir/usr/bin/test-bed-share"
   install -Dm644 data/70-test-bed-remote.rules "$pkgdir/usr/lib/udev/rules.d/70-test-bed-remote.rules"
   install -Dm644 "data/$appid.desktop" "$pkgdir/usr/share/applications/$appid.desktop"
-  install -Dm644 android-helper/dist/wireless-debugging-keeper.apk \
-    "$pkgdir/usr/share/$pkgname/wireless-debugging-keeper.apk"
+  install -Dm644 android-helper/dist/test-bed.apk \
+    "$pkgdir/usr/share/$pkgname/test-bed.apk"
 }

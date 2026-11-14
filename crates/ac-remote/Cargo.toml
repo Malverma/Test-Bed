@@ -28,6 +28,9 @@ rand = "0.8"
 bytes = "1"
 mdns-sd = "0.21.5"
 iroh = { version = "1.4", default-features = false, features = ["tls-ring", "portmapper"] }
+
+# The phone app decodes audio with Android's own Opus decoder.
+[target.'cfg(not(target_os = "android"))'.dependencies]
 opus = "0.3"
 
 [target.'cfg(windows)'.dependencies]

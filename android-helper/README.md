@@ -1,8 +1,14 @@
-# Wireless Debugging Keeper (Android helper)
+# Test Bed for Android
 
-A small app for the phones (Android 6+) that keeps **Wireless debugging**
-on (Android 11+), so Test Bed can reconnect by itself, and that
-lets phones **without** wireless debugging connect without ADB at all:
+Test Bed's phone app (Android 6+; it used to be called Wireless Debugging
+Keeper). It **controls your PCs from the phone**, on the same network or
+from anywhere, keeps **Wireless debugging** on (Android 11+) so Test Bed can
+reconnect by itself, and lets phones **without** wireless debugging connect
+without ADB at all:
+
+- **Remote PCs** (0.11, Android 7+): see and use a PC that shares with Test
+  Bed (**PC › Share this PC** there), the same connection Test Bed uses
+  between PCs. See below.
 
 - Android turns wireless debugging off whenever Wi-Fi drops and after a
   reboot. The keeper turns it back on as soon as Wi-Fi is connected, and
@@ -24,12 +30,52 @@ lets phones **without** wireless debugging connect without ADB at all:
 - **PC connection without ADB** (off by default): for Android 10 and older
   when no USB data cable is at hand. See below.
 
+## Remote PCs
+
+Under **Remote PCs** on the app's main screen:
+
+- **Add nearby PC** finds PCs sharing on this Wi-Fi. Pick one, then on that
+  PC open **Test Bed › PC › Pair a computer** and type the 6-digit PIN it
+  shows. A PC that isn't found can be added by its address.
+- **Add with invite code** is for a PC on another network: on it, turn on
+  **Allow access from other networks**, then **Invite a computer on another
+  network**, and send the code to yourself. Connections go directly where
+  the networks allow, otherwise through a relay; they are encrypted end to
+  end either way.
+- Each PC shows whether it is online. **Connect** opens its screen; hold a
+  PC's row to forget it.
+
+On the PC's screen:
+
+| Do this | To |
+|---|---|
+| Tap | Click |
+| Hold | Right-click |
+| Drag | Drag (hold the left button) |
+| Two fingers up or down | Scroll |
+| Two-finger tap | Right-click |
+| **Swipe up from the bottom edge** | Open the keyboard; what you type goes to the PC |
+| Back twice | Disconnect |
+
+Above the keyboard is a row of PC keys: Esc, Tab, arrows, Home/End, Page
+Up/Down, Delete, and Ctrl, Alt, Shift and Win, which stay down for the next
+key (tap Ctrl then C for Ctrl+C). Keys are sent as a US keyboard's, so
+letters outside it can't be typed. The PC's sound plays on the phone. If
+someone uses the PC's own keyboard or mouse, they come first: the phone's
+input pauses until they stop.
+
+The clipboard is shared while connected: text copied on the PC lands on the
+phone's clipboard, and text copied on the phone goes to the PC's. The
+**Copy** and **Paste** keys in the row press Ctrl+C and Ctrl+V on the PC
+(Paste sends the phone's clipboard first). On Linux the PC needs
+wl-clipboard.
+
 ## Install on a new phone (download link)
 
 1. On the phone, open this link and install the app (allow your browser to
    "install unknown apps" when Android asks):
-   **https://github.com/PocketStudiosLLC/Test-Bed/raw/main/android-helper/dist/wireless-debugging-keeper.apk**
-   One APK works on 32-bit and 64-bit phones (it has no native code).
+   **https://github.com/PocketStudiosLLC/Test-Bed/raw/main/android-helper/dist/test-bed.apk**
+   One APK works on 32-bit and 64-bit ARM phones.
    If Android says "There was a problem parsing the package", the phone is
    older than Android 6, or the download is incomplete: delete it from
    Downloads and download it again.
@@ -102,6 +148,14 @@ for networks it has not seen.
 `android-helper/build.sh` uses the SDK tools directly (no Gradle): a JDK
 17+ and `sdkmanager "build-tools;35.0.0" "platforms;android-35"`. It signs
 with `~/.android/debug.keystore` (created if missing).
+
+Remote PCs run Test Bed's own connection code (`crates/ac-remote-android`,
+Rust over JNI). `android-helper/native.sh` builds it for arm64-v8a and
+armeabi-v7a (`ABIS="x86_64"` for the emulator); `build.sh` runs it first
+if it hasn't been. It needs rustup's `aarch64-linux-android` and
+`armv7-linux-androideabi` targets and `sdkmanager "ndk;29.0.14206865"`.
+After a change, copy `build/test-bed.apk` to `dist/`: the PC app ships that
+file and offers it to phones.
 
 The app targets SDK 28 on purpose: since Android 10 only apps targeting 28
 or lower may switch Wi-Fi off and on, which the watchdog needs. (It also

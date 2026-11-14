@@ -38,7 +38,7 @@ On the PC this was built on, the repository is at `~/Projects/TestBed`. Upstream
 
 - The game is the **server**. It listens on **`127.0.0.1:27191`** on the phone. Test Bed is the client.
 - Test Bed checks every phone for the add-on about every 3 s and connects when the game runs. When the game closes, it reconnects next time the game starts. The game never needs to know the PC exists.
-- Over ADB, Test Bed opens the port through adb. Phones without ADB run the Wireless Debugging Keeper helper (0.7+), which connects locally and relays.
+- Over ADB, Test Bed opens the port through adb. Phones without ADB run Test Bed's phone app (0.7+), which connects locally and relays.
 
 ## 2. Rules (must)
 
@@ -319,7 +319,7 @@ A good loop for testing a change:
 | `phones` shows `"game": null` | Is it a debug or development build? Is the game in the foreground and past its first frame? Is the `INTERNET` permission present? Is another process holding port 27191 on the phone? Is Automation on in Test Bed (Preferences › Testing)? |
 | `game_command` times out | The handler blocks the main thread, or the main thread is frozen. Answer fast, and do long work over several frames. |
 | No exceptions in `crashes` | Forward exceptions as `level: "exception"` (not `error`). The same message within 10 s counts once. |
-| Works over ADB, not on phones without ADB | The phone needs Wireless Debugging Keeper **0.7+**; Test Bed offers the update on the tile. |
+| Works over ADB, not on phones without ADB | The phone needs Test Bed's phone app **0.7+**; Test Bed offers the update on the tile. |
 | Garbled data | One JSON object per line, UTF-8, `\n` at the end; no pretty-printed JSON. |
 
 ## 10. Versioning

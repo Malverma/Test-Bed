@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Installs Wireless Debugging Keeper on phones and grants what it needs.
+# Installs Test Bed's phone app on phones and grants what it needs.
 #   ./setup.sh                 every phone adb currently sees
 #   ./setup.sh SERIAL [...]    just these (USB serial or ip:port)
 # The phone must already be reachable by adb (USB, or wireless debugging on).
 set -euo pipefail
 cd "$(dirname "$0")"
 PKG=org.androidcontroller.keeper
-APK=build/wireless-debugging-keeper.apk
+APK=build/test-bed.apk
 [[ -f $APK ]] || ./build.sh
 
 serials=("$@")
@@ -41,5 +41,5 @@ for s in "${serials[@]}"; do
     echo "   installed, permission granted, running"
 done
 echo
-echo "Each phone shows a \"Wireless Debugging Keeper\" notification. Wireless debugging must have been"
+echo "Each phone shows a \"Test Bed\" notification. Wireless debugging must have been"
 echo "turned on by hand once on each Wi-Fi network with \"Always allow on this network\" ticked."

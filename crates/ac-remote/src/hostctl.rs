@@ -281,6 +281,23 @@ pub fn uinput_writable() -> bool {
     std::fs::OpenOptions::new().write(true).open("/dev/uinput").is_ok()
 }
 
+/// Whether this PC's own keyboards and mice can be read, so someone sitting
+/// at it can take over from a remote PC (`ac-remote-host`'s `local_input`).
+pub fn input_readable() -> bool {
+    let Ok(dir) = std::fs::read_dir("/dev/input") else { return true };
+    let mut any = false;
+    for e in dir.flatten() {
+        if !e.file_name().to_string_lossy().starts_with("event") {
+            continue;
+        }
+        any = true;
+        if std::fs::File::open(e.path()).is_ok() {
+            return true;
+        }
+    }
+    !any
+}
+
 pub fn ufw_active() -> bool {
     Command::new("systemctl").args(["is-active", "-q", "ufw"]).status().map(|s| s.success()).unwrap_or(false)
 }
@@ -294,7 +311,15 @@ pub fn firewall_opened() -> bool {
     marker().exists()
 }
 
-const UDEV_RULE: &str = r#"KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uinput""#;
+/// uinput lets remote PCs type and click; reading the physical keyboards,
+/// mice and touchpads lets the person at this PC take over from them.
+const UDEV_RULES: [&str; 5] = [
+    r#"KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uinput""#,
+    r#"SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT_KEYBOARD}=="1", TAG+="uaccess""#,
+    r#"SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT_MOUSE}=="1", TAG+="uaccess""#,
+    r#"SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT_TOUCHPAD}=="1", TAG+="uaccess""#,
+    r#"SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT_TOUCHSCREEN}=="1", TAG+="uaccess""#,
+];
 
 fn pkexec(script: &str) -> Result<()> {
     let o = Command::new("pkexec").args(["sh", "-c", script]).output().context("running pkexec (is polkit installed?)")?;
@@ -316,10 +341,12 @@ pub fn open_firewall() -> Result<()> {
     crate::paths::write_private(&marker(), b"1", 0o644)
 }
 
-/// Install the udev rule that lets the logged-in user create virtual input devices.
+/// Install the udev rules that let the logged-in user create virtual input
+/// devices and see when the PC's own input is used.
 pub fn fix_uinput() -> Result<()> {
+    let rules: String = UDEV_RULES.iter().map(|r| format!(" '{r}'")).collect();
     pkexec(&format!(
-        "set -e; printf '%s\\n' '{UDEV_RULE}' > /etc/udev/rules.d/70-test-bed-remote.rules; udevadm control --reload; udevadm trigger --name-match=uinput; modprobe uinput || true"
+        "set -e; printf '%s\\n'{rules} > /etc/udev/rules.d/70-test-bed-remote.rules; udevadm control --reload; modprobe uinput || true; udevadm trigger --name-match=uinput; udevadm trigger --subsystem-match=input"
     ))
 }
 

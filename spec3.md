@@ -127,6 +127,8 @@ No new inbound rule.
 | **I4** | Path and round trip in the viewer; relay in Preferences; lower default bitrate over the internet. | |
 | **W1–W5** | Windows 11 build (§9). | |
 | **F1** | Sending files: **Send file** in the viewer bar, or drop files on the remote screen. One stream per file inside the session (`FileOffer` → `Ready` → bytes → `Saved`), so it works on the LAN and across the internet. Saved to Downloads under a free name; a drop on a Windows Explorer window or the desktop saves there. An older host never answers and the send fails after 10 s. | Done; loopback tested, not yet tried between two PCs. |
+| **F2** | The person at the shared PC comes first: any use of its own keyboard, mouse or touchpad drops the remote's input until 1.5 s after they stop; held keys are released and the viewer is told both ways. Windows: low-level hooks, skipping injected input. Linux: reads the physical evdev devices (not our virtual ones); Finish setup adds a udev `uaccess` rule for keyboards, mice, touchpads and touchscreens. | Built; not yet tried on real PCs. |
+| **A1** | The phone app (renamed Test Bed, from Wireless Debugging Keeper; APK `test-bed.apk`) controls PCs: **Remote PCs** pairs by PIN on the LAN (mDNS) or by invite code over the internet, shows who is online, and views a PC with `ac-remote`'s own connection (`crates/ac-remote-android`, JNI). Video via MediaCodec, sound via Android's Opus decoder; touch is the mouse (tap, hold, drag, two-finger scroll); a swipe up from the bottom edge opens the keyboard, with a row of PC keys. | Built; LAN pairing, online check, video and the keyboard swipe tried in the emulator against this PC; internet and typing not yet tried. |
 
 ## 8. Risks
 

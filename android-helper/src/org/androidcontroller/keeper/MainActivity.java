@@ -52,6 +52,7 @@ public final class MainActivity extends Activity {
     private LinearLayout mirrorRow;
     /** The PC screens the mirror buttons were made for. */
     private String mirrorShown = "";
+    private RemotePcs remotePcs;
     private final Runnable refresh = new Runnable() {
         @Override
         public void run() {
@@ -74,9 +75,14 @@ public final class MainActivity extends Activity {
         TextView title = text("Test Bed", 20, TEXT);
         title.setTypeface(Typeface.DEFAULT_BOLD);
         col.addView(title);
-        TextView about = text("Phone companion for Test Bed on your PC", 13, DIM);
-        about.setPadding(0, dp(2), 0, dp(12));
+        TextView about = text("Control your PCs from this phone, and let Test Bed on your PC use it", 13, DIM);
+        about.setPadding(0, dp(2), 0, dp(4));
         col.addView(about);
+
+        col.addView(heading("Remote PCs"));
+        remotePcs = new RemotePcs(this, card(col));
+
+        col.addView(heading("Wireless debugging"));
 
         LinearLayout status = card(col);
         wd = row(status, "Wireless debugging");
@@ -139,11 +145,13 @@ public final class MainActivity extends Activity {
         super.onResume();
         Monitor.requestOutputs();
         handler.post(refresh);
+        remotePcs.resume();
     }
 
     @Override
     protected void onPause() {
         handler.removeCallbacks(refresh);
+        remotePcs.pause();
         super.onPause();
     }
 

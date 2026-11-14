@@ -22,7 +22,7 @@ use ac_input::keymap::android;
 use ac_media::MediaContext;
 use ac_input::broadcast::orientation_differs;
 use ac_scrcpy::{ControlMsg, VideoCodec};
-use ac_scrcpy::control::{CLIPBOARD_TEXT_MAX, truncate_utf8};
+use ac_scrcpy::control::{CLIPBOARD_TEXT_MAX, CopyKey, truncate_utf8};
 use adw::prelude::*;
 use gtk::{gdk, glib};
 
@@ -129,6 +129,8 @@ pub struct App {
     clipboard_autosync: Cell<bool>,
     /// Last text the phone put on the clipboard, to avoid echoing it back.
     last_from_device: RefCell<Option<String>>,
+    /// A phone asked for its clipboard from the tile: say so when it arrives.
+    clipboard_asked: Cell<Option<SlotId>>,
     reconnect_spinner: adw::Spinner,
     /// The grid, or the welcome page while no slot has a phone.
     home: gtk::Stack,
@@ -444,6 +446,7 @@ pub fn build(
             video: RefCell::new(vec![VideoBook::default(); slots as usize]),
             clipboard_autosync: Cell::new(cfg.input.clipboard_autosync),
             last_from_device: RefCell::new(None),
+            clipboard_asked: Cell::new(None),
             reconnect_spinner: reconnect_spinner.clone(),
             home: content.clone(),
             status,
@@ -606,9 +609,12 @@ pub fn build(
                 && app.clipboard_autosync.get()
                 && !clip.is_local()
             {
-                app.with_clipboard_text(|app, slot, text| {
+                // Every mirrored phone, so it pastes on whichever is used next.
+                app.read_clipboard(true, |app, text| {
                     if app.last_from_device.borrow().as_deref() != Some(text) {
-                        app.set_device_clipboard(slot, text, false);
+                        for slot in (1..=app.cards.len() as SlotId).filter(|s| app.streaming(*s)) {
+                            app.set_device_clipboard(slot, text, false);
+                        }
                     }
                 });
             }
@@ -1011,6 +1017,20 @@ impl App {
             CardAction::MonitorPortrait(on) => self.send(UiCommand::SetDisplayOptions { slot, view_only: None, portrait: Some(on) }),
             CardAction::SendFiles => self.pick_files(slot, false),
             CardAction::SendFolder => self.pick_files(slot, true),
+            CardAction::PasteClipboard => self.read_clipboard(false, move |app, text| {
+                app.set_device_clipboard(slot, text, true);
+                app.toast("Pasted the PC's clipboard on the phone");
+            }),
+            CardAction::TypeClipboard => self.read_clipboard(false, move |app, text| {
+                app.inputs[slot as usize - 1].inject_text(text);
+            }),
+            CardAction::CopyPhoneClipboard => {
+                if self.io[slot as usize - 1].send(ControlMsg::GetClipboard(CopyKey::None)) {
+                    self.clipboard_asked.set(Some(slot));
+                } else {
+                    self.toast("Start mirroring the phone to copy its clipboard");
+                }
+            }
             CardAction::CancelTransfers => self.send(UiCommand::CancelTransfers { slot }),
             CardAction::Rename => self.ask_rename(slot),
             CardAction::UpdateHelper => self.send(UiCommand::UpdateHelper { slot }),
@@ -1160,9 +1180,13 @@ impl App {
                 self.state.borrow_mut().discovery_error = (!available).then_some(message);
                 self.render_status();
             }
-            UiEvent::DeviceClipboard { text, .. } => {
+            UiEvent::DeviceClipboard { slot, text } => {
                 *self.last_from_device.borrow_mut() = Some(text.clone());
                 self.window.clipboard().set_text(&text);
+                if self.clipboard_asked.get() == Some(slot) {
+                    self.clipboard_asked.set(None);
+                    self.toast("Copied the phone's clipboard to the PC");
+                }
             }
             UiEvent::AppResult { slot, kind, ok, message } => {
                 if let Some(card) = self.cards.get(slot as usize - 1) {
@@ -1902,6 +1926,19 @@ impl App {
         self.window.clipboard().read_text_async(None::<&gtk::gio::Cancellable>, move |res| {
             if let (Some(app), Ok(Some(text))) = (weak.upgrade(), res) {
                 f(&app, slot, text.as_str());
+            }
+        });
+    }
+
+    /// Reads the PC's clipboard as text. Unless `quiet`, an empty or non-text clipboard is said so.
+    fn read_clipboard(self: &Rc<Self>, quiet: bool, f: impl FnOnce(&App, &str) + 'static) {
+        let weak = Rc::downgrade(self);
+        self.window.clipboard().read_text_async(None::<&gtk::gio::Cancellable>, move |res| {
+            let Some(app) = weak.upgrade() else { return };
+            match res {
+                Ok(Some(text)) if !text.is_empty() => f(&app, text.as_str()),
+                _ if quiet => {}
+                _ => app.toast("The PC's clipboard has no text"),
             }
         });
     }

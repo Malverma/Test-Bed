@@ -36,6 +36,12 @@ pub enum CardAction {
     MonitorPortrait(bool),
     SendFiles,
     SendFolder,
+    /// The PC's clipboard onto this phone, pasted into the focused field.
+    PasteClipboard,
+    /// The PC's clipboard typed out, for fields that refuse a paste.
+    TypeClipboard,
+    /// This phone's clipboard onto the PC's.
+    CopyPhoneClipboard,
     CancelTransfers,
     Rename,
     UpdateHelper,
@@ -65,6 +71,7 @@ pub struct SlotCard {
     target: gtk::CheckButton,
     target_warning: gtk::Image,
     send: gtk::MenuButton,
+    clipboard: gtk::MenuButton,
     stay_awake: gtk::ToggleButton,
     monitor: gtk::ToggleButton,
     monitor_touch: gtk::ToggleButton,
@@ -188,6 +195,32 @@ impl SlotCard {
             .visible(false)
             .build();
         send.add_css_class("flat");
+        // Copy and paste between the PC and this phone.
+        let clip_popover = gtk::Popover::new();
+        let clip_menu = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        for (label, action) in [
+            ("Paste PC clipboard here (Alt+V)", CardAction::PasteClipboard),
+            ("Type PC clipboard (Alt+Shift+V)", CardAction::TypeClipboard),
+            ("Copy phone clipboard to PC", CardAction::CopyPhoneClipboard),
+        ] {
+            let b = gtk::Button::builder().label(label).build();
+            b.add_css_class("flat");
+            b.child().and_downcast::<gtk::Label>().inspect(|l| l.set_xalign(0.0));
+            let (on_action, popover) = (on_action.clone(), clip_popover.clone());
+            b.connect_clicked(move |_| {
+                popover.popdown();
+                on_action(slot, action);
+            });
+            clip_menu.append(&b);
+        }
+        clip_popover.set_child(Some(&clip_menu));
+        let clipboard = gtk::MenuButton::builder()
+            .icon_name("edit-paste-symbolic")
+            .tooltip_text("Copy and paste between the PC and this phone. Copying on the PC also puts it on every mirrored phone")
+            .popover(&clip_popover)
+            .visible(false)
+            .build();
+        clipboard.add_css_class("flat");
         let stay_awake = gtk::ToggleButton::builder()
             .icon_name("display-brightness-symbolic")
             .tooltip_text("Keep screen on: the phone's screen never turns off by itself")
@@ -239,6 +272,7 @@ impl SlotCard {
         header.append(&monitor_portrait);
         header.append(&monitor_touch);
         header.append(&monitor);
+        header.append(&clipboard);
         header.append(&send);
         header.append(&focus);
 
@@ -445,6 +479,7 @@ impl SlotCard {
             target,
             target_warning,
             send,
+            clipboard,
             stay_awake,
             monitor,
             monitor_touch,
@@ -567,6 +602,8 @@ impl SlotCard {
         self.focus.set_visible(online && matches!(v.stream, StreamView::Live { .. } | StreamView::Starting));
         self.retry.set_visible(online && matches!(v.stream, StreamView::Failed(_)));
         self.send.set_visible(online);
+        // Clipboard messages travel with the mirror.
+        self.clipboard.set_visible(online && matches!(v.stream, StreamView::Live { .. }));
         self.stay_awake.set_visible(online);
         // Insensitive until the phone's current state is known.
         self.stay_awake.set_sensitive(v.stay_awake.is_some());

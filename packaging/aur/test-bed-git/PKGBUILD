@@ -16,6 +16,7 @@ makedepends=('cargo' 'git' 'clang')
 optdepends=('nss-mdns: resolve .local hostnames'
             'polkit: one-click firewall setup for sharing this PC (PC tab)'
             'libnotify: a notification when a computer connects to this PC'
+            'wl-clipboard: share this PC'\''s clipboard with phones controlling it'
             'libpulse: send this PC'\''s audio to computers controlling it (parec)'
             'pipewire-audio: play the focused phone'\''s audio (pw-cat)'
             'intel-media-driver: hardware video on Intel GPUs (Broadwell and newer)'
@@ -67,7 +68,7 @@ package() {
   install -Dm644 data/70-test-bed-remote.rules "$pkgdir/usr/lib/udev/rules.d/70-test-bed-remote.rules"
   install -Dm644 "data/$appid.desktop" "$pkgdir/usr/share/applications/$appid.desktop"
   # The phone helper, for installing by hand (the app also offers it).
-  install -Dm644 android-helper/dist/wireless-debugging-keeper.apk \
-    "$pkgdir/usr/share/$_pkgname/wireless-debugging-keeper.apk"
+  install -Dm644 android-helper/dist/test-bed.apk \
+    "$pkgdir/usr/share/$_pkgname/test-bed.apk"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }

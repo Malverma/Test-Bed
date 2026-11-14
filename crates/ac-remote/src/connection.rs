@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use anyhow::{anyhow, bail, Context, Result};
 use crate::identity::Identity;
 use crate::net::Conn;
-use crate::proto::{read_msg, write_msg, ClientMsg, HostMsg, MonitorInfo, Motion, StreamSettings};
+use crate::proto::{read_msg, write_msg, ClientMsg, ClipMsg, HostMsg, MonitorInfo, Motion, StreamSettings};
 use crate::transport::{self, ALPN_SESSION};
 use crate::trust::{KnownHost, KnownHosts};
 use crate::video::{FrameMeta, Reassembler};
@@ -50,6 +50,8 @@ pub enum NetEvent {
     /// The host saved it at `path` (a path on the host).
     FileSent { name: String, path: String },
     FileFailed { name: String, error: String },
+    /// The host's clipboard changed (after [`Outgoing::WatchClipboard`]).
+    Clipboard(String),
     /// Unrecoverable: the viewer should show it and stop.
     Fatal(String),
 }
@@ -60,6 +62,11 @@ pub enum Outgoing {
     Motion(Motion),
     /// Send a file; `drop_at` is where on the stream it was dropped (0..1).
     SendFile { path: std::path::PathBuf, drop_at: Option<(f32, f32)> },
+    /// Put this text on the host's clipboard.
+    Clipboard(String),
+    /// Hear about the host's clipboard ([`NetEvent::Clipboard`]), from now on
+    /// and after reconnecting.
+    WatchClipboard,
     Quit,
 }
 
@@ -70,6 +77,14 @@ fn file_name(path: &std::path::Path) -> String {
 pub struct NetHandle {
     pub tx: mpsc::UnboundedSender<Outgoing>,
     pub quit: Arc<AtomicBool>,
+}
+
+/// The clipboard across reconnects: whether the viewer watches the host's,
+/// and text it copied while there was no connection, sent once there is.
+#[derive(Default)]
+struct Clip {
+    watch: bool,
+    pending: Option<String>,
 }
 
 enum Ended {
@@ -107,11 +122,12 @@ async fn run(
         Err(e) => return events(NetEvent::Fatal(format!("{e:#}"))),
     };
     let mut attempt = 0u32;
+    let mut clip = Clip::default();
     loop {
         attempt += 1;
         events(NetEvent::Connecting { attempt });
         let started = Instant::now();
-        let (res, connected) = session(&endpoint, &host, &mut settings, &client_name, &identity, &mut rx, &req_tx, &events).await;
+        let (res, connected) = session(&endpoint, &host, &mut settings, &mut clip, &client_name, &identity, &mut rx, &req_tx, &events).await;
         if connected && started.elapsed() > Duration::from_secs(5) {
             attempt = 1; // a session that got going resets the backoff
         }
@@ -137,6 +153,8 @@ async fn run(
                 m = rx.recv() => match m {
                     None | Some(Outgoing::Quit) => { endpoint.close().await; return; }
                     Some(Outgoing::Msg(ClientMsg::UpdateSettings(s))) => settings = s,
+                    Some(Outgoing::WatchClipboard) => clip.watch = true,
+                    Some(Outgoing::Clipboard(text)) => clip.pending = Some(text),
                     Some(Outgoing::SendFile { path, .. }) => {
                         events(NetEvent::FileFailed { name: file_name(&path), error: "not connected".into() });
                     }
@@ -181,6 +199,7 @@ async fn session(
     endpoint: &Dialer,
     host: &KnownHost,
     settings: &mut StreamSettings,
+    clip: &mut Clip,
     client_name: &str,
     identity: &Identity,
     rx: &mut mpsc::UnboundedReceiver<Outgoing>,
@@ -194,7 +213,7 @@ async fn session(
             return (if msg.contains("fingerprint") { Ended::Fatal(msg) } else { Ended::Retry(msg) }, false);
         }
     };
-    let r = run_session(&conn, settings, client_name, rx, req_tx, events).await;
+    let r = run_session(&conn, settings, clip, client_name, rx, req_tx, events).await;
     let ended = match r {
         Ok(e) => e,
         Err(e) => classify(&conn, e),
@@ -250,6 +269,7 @@ async fn connect(endpoint: &Dialer, host: &KnownHost, identity: &Identity) -> Re
 async fn run_session(
     conn: &Conn,
     settings: &mut StreamSettings,
+    clip: &mut Clip,
     client_name: &str,
     rx: &mut mpsc::UnboundedReceiver<Outgoing>,
     req_tx: &mpsc::UnboundedSender<Outgoing>,
@@ -269,6 +289,30 @@ async fn run_session(
             let _ = kh.save();
         }
     }
+
+    if clip.watch {
+        spawn_clip(conn, ClipMsg::Subscribe);
+    }
+    if let Some(text) = clip.pending.take() {
+        spawn_clip(conn, ClipMsg::Text { text: crate::proto::clip_text(&text) });
+    }
+    // The host's clipboard, each change on a stream of its own.
+    let clipboard = {
+        let conn = conn.clone();
+        let events = events.clone();
+        async move {
+            loop {
+                let r = conn.accept_uni().await?;
+                match crate::proto::read_clip(r).await {
+                    Ok(Some(ClipMsg::Text { text })) => events(NetEvent::Clipboard(text)),
+                    Ok(_) => {}
+                    Err(e) => tracing::debug!("clipboard from the host: {e:#}"),
+                }
+            }
+            #[allow(unreachable_code)]
+            anyhow::Ok(Ended::Quit)
+        }
+    };
 
     // Host → client control messages.
     let control = {
@@ -403,6 +447,13 @@ async fn run_session(
                         Some(Outgoing::SendFile { path, drop_at }) => {
                             let _ = file_tx.send((path, drop_at));
                         }
+                        Some(Outgoing::Clipboard(text)) => spawn_clip(&conn, ClipMsg::Text { text: crate::proto::clip_text(&text) }),
+                        Some(Outgoing::WatchClipboard) => {
+                            if !clip.watch {
+                                clip.watch = true;
+                                spawn_clip(&conn, ClipMsg::Subscribe);
+                            }
+                        }
                     }
                 }
             }
@@ -414,5 +465,16 @@ async fn run_session(
         r = video => r,
         r = input => r,
         r = files => r,
+        r = clipboard => r,
     }
+}
+
+/// Sends a clipboard message without holding up input.
+fn spawn_clip(conn: &Conn, msg: ClipMsg) {
+    let conn = conn.clone();
+    tokio::spawn(async move {
+        if let Err(e) = crate::proto::send_clip(&conn, &msg).await {
+            tracing::debug!("clipboard to the host: {e:#}");
+        }
+    });
 }
